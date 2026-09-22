@@ -591,6 +591,7 @@ struct AppData {
     panel_refresh_at: Cell<f64>,
     permission_refresh_at: Cell<f64>,
     frame_trace: RefCell<FrameTrace>,
+    display_link: RefCell<Option<(Retained<AnyObject>, u32)>>,
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
     unrestored: RefCell<remote::Unrestored>,
@@ -626,6 +627,7 @@ define_class!(
         fn terminate(&self, _notification: &NSNotification) {
             self.ivars().closing.set(true);
             if let Some(timer) = self.ivars().timer.borrow_mut().take() { timer.invalidate(); }
+            self.stop_display_link();
             self.ivars().hotkeys.replace(None);
             self.ivars().capture.stop();
             for overlay in self.ivars().overlays.borrow().iter() { overlay.retire(); }
@@ -634,12 +636,16 @@ define_class!(
     }
     impl Delegate {
         #[unsafe(method(tick:))]
-        fn on_timer(&self, _timer: &NSTimer) {
-            let started = self.now();
-            let mouse = NSEvent::mouseLocation();
-            self.tick();
-            let active = self.ivars().fast_timer.get();
-            self.ivars().frame_trace.borrow_mut().record(started, self.now() - started, (mouse.x, mouse.y), active);
+        fn on_timer(&self, _timer: &NSTimer) { self.frame(); }
+        #[unsafe(method(displayFrame:))]
+        fn on_display_frame(&self, _link: &AnyObject) {
+            // Follow the pointer to another display's refresh cadence.
+            let linked = self.ivars().display_link.borrow().as_ref().map(|(_, id)| *id);
+            let current = self.pointer_screen().map(|screen| display_id(&screen));
+            if linked.is_some() && current.is_some() && linked != current {
+                self.install_timer(true);
+            }
+            self.frame();
         }
         #[unsafe(method(toggle:))]
         fn toggle(&self, _sender: Option<&AnyObject>) {
@@ -1386,9 +1392,17 @@ impl Delegate {
         status.setMenu(Some(&menu));
         self.ivars().status.replace(Some(status));
     }
+    /// Frames follow the display's refresh (CADisplayLink on the pointer's
+    /// screen, macOS 14+) so each vsync gets exactly one update; macOS 13
+    /// falls back to a 60 Hz timer. Idle checks use a 4 Hz timer.
     fn install_timer(&self, fast: bool) {
         if let Some(timer) = self.ivars().timer.borrow_mut().take() {
             timer.invalidate();
+        }
+        self.stop_display_link();
+        if fast && self.start_display_link() {
+            self.ivars().fast_timer.set(true);
+            return;
         }
         // SAFETY: self is kept alive for the app lifetime; the timer is invalidated on quit.
         let timer = unsafe {
@@ -1405,6 +1419,64 @@ impl Delegate {
         }
         self.ivars().timer.replace(Some(timer));
         self.ivars().fast_timer.set(fast);
+    }
+    fn pointer_screen(&self) -> Option<Retained<NSScreen>> {
+        let pointer = NSEvent::mouseLocation();
+        let screens = NSScreen::screens(self.mtm());
+        screens
+            .iter()
+            .find(|screen| {
+                let f = screen.frame();
+                pointer.x >= f.origin.x
+                    && pointer.y >= f.origin.y
+                    && pointer.x < f.origin.x + f.size.width
+                    && pointer.y < f.origin.y + f.size.height
+            })
+            .or_else(|| screens.firstObject())
+    }
+    fn start_display_link(&self) -> bool {
+        let Some(screen) = self.pointer_screen() else {
+            return false;
+        };
+        if !screen.respondsToSelector(sel!(displayLinkWithTarget:selector:)) {
+            return false;
+        }
+        // SAFETY: documented NSScreen API (macOS 14); the link retains this
+        // app-lifetime delegate and is invalidated before being dropped.
+        let link: Option<Retained<AnyObject>> = unsafe {
+            msg_send![&*screen, displayLinkWithTarget: self, selector: sel!(displayFrame:)]
+        };
+        let Some(link) = link else {
+            return false;
+        };
+        unsafe {
+            let _: () = msg_send![&*link, addToRunLoop: &*NSRunLoop::mainRunLoop(), forMode: NSRunLoopCommonModes];
+        }
+        self.ivars()
+            .display_link
+            .replace(Some((link, display_id(&screen))));
+        true
+    }
+    fn stop_display_link(&self) {
+        if let Some((link, _)) = self.ivars().display_link.borrow_mut().take() {
+            // SAFETY: CADisplayLink -invalidate removes it from its run loop.
+            unsafe {
+                let _: () = msg_send![&*link, invalidate];
+            }
+        }
+    }
+    /// One frame: trace (if enabled), then the regular tick.
+    fn frame(&self) {
+        let started = self.now();
+        let mouse = NSEvent::mouseLocation();
+        self.tick();
+        let active = self.ivars().fast_timer.get();
+        self.ivars().frame_trace.borrow_mut().record(
+            started,
+            self.now() - started,
+            (mouse.x, mouse.y),
+            active,
+        );
     }
     fn refresh_screens(&self) {
         let screens = NSScreen::screens(self.mtm());
@@ -1615,6 +1687,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         battery: Cell::new(None),
         panel_refresh_at: Cell::new(0.0),
         permission_refresh_at: Cell::new(0.0),
+        display_link: RefCell::new(None),
         frame_trace: RefCell::new(FrameTrace {
             enabled: std::env::var_os("ORANGE_BEAM_TRACE_FRAMES").is_some(),
             ..Default::default()
