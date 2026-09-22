@@ -1,5 +1,6 @@
 //! Native AppKit shell. All window and drawing work stays on the main thread.
 mod capture;
+mod cursor;
 mod hotkey;
 pub mod input_access;
 mod panel;
@@ -592,6 +593,7 @@ struct AppData {
     permission_refresh_at: Cell<f64>,
     frame_trace: RefCell<FrameTrace>,
     display_link: RefCell<Option<(Retained<AnyObject>, u32)>>,
+    cursor: RefCell<cursor::CursorHider>,
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
     unrestored: RefCell<remote::Unrestored>,
@@ -628,6 +630,7 @@ define_class!(
             self.ivars().closing.set(true);
             if let Some(timer) = self.ivars().timer.borrow_mut().take() { timer.invalidate(); }
             self.stop_display_link();
+            self.ivars().cursor.borrow_mut().set_hidden(false);
             self.ivars().hotkeys.replace(None);
             self.ivars().capture.stop();
             for overlay in self.ivars().overlays.borrow().iter() { overlay.retire(); }
@@ -1565,6 +1568,12 @@ impl Delegate {
         }
         let state = self.ivars().presentation.borrow();
         let active = state.active(now);
+        // The effect stands in for the pointer only while the remote drives it
+        // (or the screen is black); mouse previews keep the pointer visible.
+        self.ivars()
+            .cursor
+            .borrow_mut()
+            .set_hidden(state.remote_showing() || state.blackout);
         if active != self.ivars().fast_timer.get() {
             self.install_timer(active);
         }
@@ -1688,6 +1697,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         panel_refresh_at: Cell::new(0.0),
         permission_refresh_at: Cell::new(0.0),
         display_link: RefCell::new(None),
+        cursor: RefCell::new(cursor::CursorHider::default()),
         frame_trace: RefCell::new(FrameTrace {
             enabled: std::env::var_os("ORANGE_BEAM_TRACE_FRAMES").is_some(),
             ..Default::default()

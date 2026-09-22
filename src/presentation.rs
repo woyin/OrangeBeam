@@ -190,6 +190,10 @@ impl Presentation {
             _ => None,
         }
     }
+    /// The top button is held and not suppressed by an emergency hide.
+    pub fn remote_showing(&self) -> bool {
+        self.remote_held && !self.remote_suppressed
+    }
     pub fn toggle(&mut self, now: f64) {
         if self.active(now) {
             self.hide();
