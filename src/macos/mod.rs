@@ -513,6 +513,7 @@ struct AppData {
     remote_status: Cell<RemoteStatus>,
     battery: Cell<Option<(u8, u8)>>,
     panel_refresh_at: Cell<f64>,
+    permission_refresh_at: Cell<f64>,
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
     unrestored: RefCell<remote::Unrestored>,
@@ -1374,10 +1375,21 @@ impl Delegate {
             .as_ref()
             .is_some_and(|panel| panel.window.isVisible());
         if panel_visible && now >= self.ivars().panel_refresh_at.get() {
-            // Once a second while shown: elapsed time and privacy state granted
-            // meanwhile. A closed panel is refreshed again when reopened.
+            // Once a second while shown: elapsed time. Privacy queries block the
+            // main thread on tccd for several milliseconds each (a profile showed
+            // ~21 ms per second, i.e. dropped 60 Hz frames), so they run only
+            // every 10 s and never while an effect is on screen. Opening the
+            // panel and "去设置" still query at once.
             self.ivars().panel_refresh_at.set(now + 1.0);
-            self.refresh_panel(true);
+            let effect_on_screen = {
+                let state = self.ivars().presentation.borrow();
+                state.active(now) || state.blackout
+            };
+            let permissions = !effect_on_screen && now >= self.ivars().permission_refresh_at.get();
+            if permissions {
+                self.ivars().permission_refresh_at.set(now + 10.0);
+            }
+            self.refresh_panel(permissions);
         }
         if now - self.ivars().screen_check.get() >= 1.0 {
             self.refresh_screens();
@@ -1518,6 +1530,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         remote_status: Cell::new(RemoteStatus::Connecting),
         battery: Cell::new(None),
         panel_refresh_at: Cell::new(0.0),
+        permission_refresh_at: Cell::new(0.0),
         toast: RefCell::new(None),
         toast_until: Cell::new(0.0),
         unrestored: RefCell::new(Delegate::load_unrestored()),
