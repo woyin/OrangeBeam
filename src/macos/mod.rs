@@ -105,6 +105,89 @@ enum BoxDraw {
     Rect(NSRect),
 }
 
+/// Everything that changes the uniform background, versus the small region
+/// whose pixels differ from it. Only a background change needs a full repaint.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    black: bool,
+    effect: Effect,
+    shade: f64,
+    zoom: f64,
+    /// Outside the feature is dimmed (spotlight, magnifier, box) or clear.
+    shaded: bool,
+    feature: Option<NSRect>,
+}
+
+/// Margin covering the 2 pt border stroke and antialiasing.
+const REPAINT_MARGIN: f64 = 4.0;
+
+fn union_rect(a: NSRect, b: NSRect) -> NSRect {
+    let x = a.origin.x.min(b.origin.x);
+    let y = a.origin.y.min(b.origin.y);
+    let right = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
+    let top = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
+    NSRect::new(NSPoint::new(x, y), NSSize::new(right - x, top - y))
+}
+
+impl ViewData {
+    fn look(&self) -> Look {
+        let around = |p: NSPoint, r: f64| {
+            let r = r + REPAINT_MARGIN;
+            NSRect::new(
+                NSPoint::new(p.x - r, p.y - r),
+                NSSize::new(r * 2.0, r * 2.0),
+            )
+        };
+        let (shaded, feature) = match self.effect.get() {
+            Effect::Spotlight | Effect::Magnify => {
+                (true, Some(around(self.center.get(), self.radius.get())))
+            }
+            // Outer glow radius of the laser dot.
+            Effect::Laser => (false, Some(around(self.center.get(), 17.0))),
+            Effect::Box => match self.box_draw.get() {
+                BoxDraw::None => (false, None),
+                // Crosshair arm length plus the marker's outline.
+                BoxDraw::Aim(p) | BoxDraw::Anchor(p) => (false, Some(around(p, 20.0))),
+                BoxDraw::Rect(r) => (
+                    true,
+                    Some(NSRect::new(
+                        NSPoint::new(r.origin.x - REPAINT_MARGIN, r.origin.y - REPAINT_MARGIN),
+                        NSSize::new(
+                            r.size.width + REPAINT_MARGIN * 2.0,
+                            r.size.height + REPAINT_MARGIN * 2.0,
+                        ),
+                    )),
+                ),
+            },
+        };
+        Look {
+            black: self.black.get(),
+            effect: self.effect.get(),
+            shade: self.shade.get(),
+            zoom: self.zoom.get(),
+            shaded,
+            feature,
+        }
+    }
+}
+
+/// The rectangle to repaint after a change from `before` to `after`, or
+/// None for a full repaint. Moving a spotlight only alters its old and new
+/// circles; the dimmed screen around them stays identical.
+fn repaint_region(before: Look, after: Look, content_changed: bool) -> Option<Option<NSRect>> {
+    let background = |l: Look| (l.black, l.effect, l.shade, l.zoom, l.shaded);
+    if background(before) != background(after) {
+        return None;
+    }
+    if before.feature == after.feature && !content_changed {
+        return Some(None);
+    }
+    Some(match (before.feature, after.feature) {
+        (Some(a), Some(b)) => Some(union_rect(a, b)),
+        (a, b) => a.or(b),
+    })
+}
+
 /// Crosshair marking a box corner; `fixed` draws the confirmed start corner.
 fn draw_corner_marker(point: NSPoint, fixed: bool) {
     let arm = 18.0;
@@ -301,6 +384,20 @@ impl Overlay {
             self.panel.orderFrontRegardless();
         }
     }
+    /// Invalidate only what changed since `before`; a hidden panel may hold a
+    /// stale frame, so showing it always repaints everything.
+    fn repaint(&self, before: Look, content_changed: bool) {
+        let visible = self.panel.isVisible();
+        match repaint_region(before, self.view.ivars().look(), content_changed) {
+            _ if !visible => self.view.setNeedsDisplay(true),
+            None => self.view.setNeedsDisplay(true),
+            Some(Some(dirty)) => self.view.setNeedsDisplayInRect(dirty),
+            Some(None) => {}
+        }
+        if !visible {
+            self.panel.orderFrontRegardless();
+        }
+    }
     fn global_frame(&self) -> Rect {
         Rect {
             x: self.frame.origin.x,
@@ -330,17 +427,13 @@ impl Overlay {
         };
         self.panel.setLevel(NSFloatingWindowLevel);
         let data = self.view.ivars();
+        let before = data.look();
         data.image.replace(None);
-        let changed = data.black.replace(false)
-            || data.effect.replace(Effect::Box) != Effect::Box
-            || data.box_draw.replace(draw) != draw
-            || data.shade.replace(state.shade) != state.shade;
-        if changed || !self.panel.isVisible() {
-            self.view.setNeedsDisplay(true);
-        }
-        if !self.panel.isVisible() {
-            self.panel.orderFrontRegardless();
-        }
+        data.black.set(false);
+        data.effect.set(Effect::Box);
+        data.box_draw.set(draw);
+        data.shade.set(state.shade);
+        self.repaint(before, false);
     }
     fn render(&self, pointer: NSPoint, state: &Presentation, capture: &Capture) {
         let rect = Rect {
@@ -357,6 +450,7 @@ impl Overlay {
             return;
         };
         let data = self.view.ivars();
+        let before = data.look();
         let mut fresh_image = false;
         if state.effect == Effect::Magnify {
             let Some((sequence, image)) = capture.frame() else {
@@ -376,25 +470,14 @@ impl Overlay {
             data.image.replace(None);
         }
         self.panel.setLevel(NSFloatingWindowLevel);
-        let center = NSPoint::new(local.x, local.y);
-        let changed = data.black.replace(false)
-            || fresh_image
-            || data.zoom.get() != state.zoom
-            || data.center.get() != center
-            || data.effect.get() != state.effect
-            || data.radius.get() != state.radius
-            || data.shade.get() != state.shade;
-        data.center.set(center);
+        data.black.set(false);
+        data.center.set(NSPoint::new(local.x, local.y));
         data.effect.set(state.effect);
         data.radius.set(state.radius);
         data.shade.set(state.shade);
         data.zoom.set(state.zoom);
-        if changed || !self.panel.isVisible() {
-            self.view.setNeedsDisplay(true);
-        }
-        if !self.panel.isVisible() {
-            self.panel.orderFrontRegardless();
-        }
+        // A new magnifier frame changes the circle's content in place.
+        self.repaint(before, fresh_image);
     }
 }
 

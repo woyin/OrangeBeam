@@ -137,6 +137,75 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         write(&result, &directory.join(format!("{name}.png")))?;
         println!("PASS {name}: corner alpha={corner_alpha:.3}, center alpha={center_alpha:.3}");
     }
+    // Partial repaint: after a move, repainting only the computed dirty region
+    // must leave exactly the pixels a full repaint would produce.
+    type Change = fn(&ViewData);
+    let scenarios: [(&str, Effect, Change); 5] = [
+        ("spotlight move", Effect::Spotlight, |d| {
+            d.center.set(NSPoint::new(530.0, 190.0))
+        }),
+        ("spotlight resize", Effect::Spotlight, |d| {
+            d.radius.set(160.0)
+        }),
+        ("laser move", Effect::Laser, |d| {
+            d.center.set(NSPoint::new(610.0, 300.0))
+        }),
+        ("magnifier move", Effect::Magnify, |d| {
+            d.center.set(NSPoint::new(450.0, 260.0))
+        }),
+        ("box drag", Effect::Box, |d| {
+            d.box_draw.set(BoxDraw::Rect(NSRect::new(
+                NSPoint::new(260.0, 120.0),
+                NSSize::new(330.0, 210.0),
+            )))
+        }),
+    ];
+    for (name, effect, change) in scenarios {
+        let view = OverlayView::alloc(mtm).set_ivars(ViewData::default());
+        let view: Retained<OverlayView> = unsafe { msg_send![super(view), initWithFrame: bounds] };
+        let data = view.ivars();
+        data.effect.set(effect);
+        data.center.set(NSPoint::new(400.0, 225.0));
+        data.radius.set(100.0);
+        data.shade.set(0.6);
+        data.zoom.set(2.0);
+        if effect == Effect::Magnify {
+            data.image.replace(Some(source.clone()));
+        }
+        if effect == Effect::Box {
+            data.box_draw.set(BoxDraw::Rect(NSRect::new(
+                NSPoint::new(300.0, 150.0),
+                NSSize::new(200.0, 150.0),
+            )));
+        }
+        let partial = bitmap()?;
+        context(&partial)?;
+        view.draw(sel!(drawRect:), bounds);
+        let before = data.look();
+        change(data);
+        let Some(Some(dirty)) = repaint_region(before, data.look(), false) else {
+            return Err(format!("{name}: expected a partial repaint").into());
+        };
+        NSGraphicsContext::saveGraphicsState_class();
+        NSRectClip(dirty);
+        view.draw(sel!(drawRect:), dirty);
+        NSGraphicsContext::restoreGraphicsState_class();
+        let full = bitmap()?;
+        context(&full)?;
+        view.draw(sel!(drawRect:), bounds);
+        let bytes = |rep: &NSBitmapImageRep| {
+            let len = (rep.bytesPerRow() * rep.pixelsHigh()) as usize;
+            // SAFETY: the rep owns a contiguous buffer of bytesPerRow * height.
+            unsafe { std::slice::from_raw_parts(rep.bitmapData(), len) }.to_vec()
+        };
+        let (a, b) = (bytes(&partial), bytes(&full));
+        let differing = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+        let area = dirty.size.width * dirty.size.height / (800.0 * 450.0) * 100.0;
+        if differing != 0 {
+            return Err(format!("{name}: partial repaint differs in {differing} bytes").into());
+        }
+        println!("PASS partial repaint, {name}: identical, repainted {area:.1}% of the view");
+    }
     // Menu bar glyph at 8x: solid pool and lamp, translucent cone. The system
     // tints the template image; its alpha is what this check verifies.
     let glyph_scale = 8.0;
