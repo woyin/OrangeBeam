@@ -19,6 +19,7 @@ for lproj in en.lproj zh-Hans.lproj; do
   cp "$project_dir/assets/$lproj/InfoPlist.strings" "$app_dir/Contents/Resources/$lproj/"
 done
 cp "$project_dir/assets/Info.plist" "$app_dir/Contents/Info.plist"
+cp "$project_dir/assets/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 cp "$project_dir/LICENSE" "$project_dir/NOTICE" "$project_dir/THIRD-PARTY-LICENSES.txt" "$app_dir/Contents/Resources/Licenses/"
 codesign --force --sign - --identifier io.github.woyin.orangebeam "$app_dir"
 echo "$app_dir"

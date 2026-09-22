@@ -5,10 +5,11 @@ pub mod input_access;
 mod panel;
 mod remote;
 pub mod render_qa;
+use block2::RcBlock;
 use capture::Capture;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::*;
 use objc2_core_graphics::{
@@ -38,6 +39,45 @@ struct ViewData {
     black: Cell<bool>,
     /// Box effect content in view coordinates.
     box_draw: Cell<BoxDraw>,
+}
+
+/// Menu bar glyph: the app icon's lamp, light cone and pool as a template
+/// image, so macOS tints it for light, dark and highlighted menu bars.
+fn status_glyph() -> Retained<NSImage> {
+    let draw = RcBlock::new(|_bounds: NSRect| -> Bool {
+        let ink = |alpha: f64| NSColor::colorWithSRGBRed_green_blue_alpha(0.0, 0.0, 0.0, alpha);
+        ink(1.0).setFill();
+        NSBezierPath::bezierPathWithRect(NSRect::new(
+            NSPoint::new(8.4, 16.2),
+            NSSize::new(1.2, 1.6),
+        ))
+        .fill();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+            NSRect::new(NSPoint::new(5.5, 13.4), NSSize::new(7.0, 3.0)),
+            1.3,
+            1.3,
+        )
+        .fill();
+        let cone = NSBezierPath::bezierPath();
+        cone.moveToPoint(NSPoint::new(7.0, 13.4));
+        cone.lineToPoint(NSPoint::new(11.0, 13.4));
+        cone.lineToPoint(NSPoint::new(15.2, 4.4));
+        cone.lineToPoint(NSPoint::new(2.8, 4.4));
+        cone.closePath();
+        ink(0.45).setFill();
+        cone.fill();
+        ink(1.0).setFill();
+        NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+            NSPoint::new(2.0, 1.6),
+            NSSize::new(14.0, 4.6),
+        ))
+        .fill();
+        Bool::YES
+    });
+    let image =
+        NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(18.0, 18.0), false, &draw);
+    image.setTemplate(true);
+    image
 }
 
 /// Localized product name: 橙现 when the preferred language is Chinese,
@@ -1047,9 +1087,9 @@ impl Delegate {
         let status = match elapsed {
             Some(seconds) => {
                 let seconds = seconds as u64;
-                format!("◎ {:02}:{:02}", seconds / 60, seconds % 60)
+                format!(" {:02}:{:02}", seconds / 60, seconds % 60)
             }
-            None => "◎".into(),
+            None => String::new(),
         };
         if let Some(item) = self.ivars().status.borrow().as_ref() {
             if let Some(button) = item.button(self.mtm()) {
@@ -1170,7 +1210,9 @@ impl Delegate {
         let status =
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = status.button(self.mtm()) {
-            button.setTitle(ns_string!("◎"));
+            button.setImage(Some(&status_glyph()));
+            button.setImagePosition(NSCellImagePosition::ImageLeft);
+            button.setTitle(ns_string!(""));
             button.setToolTip(Some(&NSString::from_str(app_name())));
         }
         status.setMenu(Some(&menu));

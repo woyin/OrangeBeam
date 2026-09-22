@@ -393,7 +393,7 @@ impl Delegate {
                 NSWindow::alloc(mtm),
                 NSRect::new(NSPoint::ZERO, NSSize::new(CONTENT_WIDTH + 40.0, 400.0)),
                 // No miniaturize: a minimized window would add a Dock tile to
-                // this menu-bar-only app. Closing hides it; ◎ reopens it.
+                // this menu-bar-only app. Closing hides it; the menu bar icon reopens it.
                 NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
                 NSBackingStoreType::Buffered,
                 false,

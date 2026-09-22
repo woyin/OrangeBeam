@@ -137,6 +137,39 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         write(&result, &directory.join(format!("{name}.png")))?;
         println!("PASS {name}: corner alpha={corner_alpha:.3}, center alpha={center_alpha:.3}");
     }
+    // Menu bar glyph at 8x: solid pool and lamp, translucent cone. The system
+    // tints the template image; its alpha is what this check verifies.
+    let glyph_scale = 8.0;
+    let layer = bitmap()?;
+    context(&layer)?;
+    status_glyph().drawInRect(NSRect::new(
+        NSPoint::ZERO,
+        NSSize::new(18.0 * glyph_scale, 18.0 * glyph_scale),
+    ));
+    // colorAtX_y counts rows from the top of the 450-pixel bitmap.
+    let alpha_at = |x: f64, y: f64| {
+        layer
+            .colorAtX_y(
+                (x * glyph_scale) as isize,
+                (450.0 - y * glyph_scale) as isize,
+            )
+            .map(|c| c.alphaComponent())
+            .unwrap_or(0.0)
+    };
+    let (pool, cone, lamp, outside) = (
+        alpha_at(9.0, 3.9),
+        alpha_at(9.0, 9.0),
+        alpha_at(9.0, 14.9),
+        alpha_at(1.0, 12.0),
+    );
+    if pool < 0.99 || lamp < 0.99 || !(0.3..0.6).contains(&cone) || outside > 0.01 {
+        return Err(format!(
+            "Status glyph alpha check failed: pool={pool:.2} cone={cone:.2} lamp={lamp:.2} outside={outside:.2}"
+        )
+        .into());
+    }
+    write(&layer, &directory.join("status-glyph.png"))?;
+    println!("PASS status-glyph: pool alpha={pool:.3}, cone alpha={cone:.3}, lamp alpha={lamp:.3}");
     NSGraphicsContext::setCurrentContext(None);
     Ok(())
 }

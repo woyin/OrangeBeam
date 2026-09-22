@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Orange Beam (橙现) app icon, direction E "stage spotlight".
+       macOS grid: 824x824 body centred on a 1024 canvas. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2B3038"/>
+      <stop offset="1" stop-color="#17191E"/>
+    </linearGradient>
+    <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC180" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#FF9A48" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#FF8A2A" stop-opacity="0.66"/>
+    </linearGradient>
+    <linearGradient id="lamp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC78A"/>
+      <stop offset="1" stop-color="#FF9A3D"/>
+    </linearGradient>
+    <radialGradient id="pool" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#FFB066"/>
+      <stop offset="0.55" stop-color="#FF7A1A"/>
+      <stop offset="1" stop-color="#E8620A"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#body)" filter="url(#shadow)"/>
+  <!-- Light cone: narrow at the lamp, widening onto the stage. -->
+  <polygon points="462,318 562,318 772,730 252,730" fill="url(#cone)"/>
+  <!-- Pool of light on the stage floor. -->
+  <ellipse cx="512" cy="734" rx="262" ry="70" fill="url(#pool)"/>
+  <ellipse cx="512" cy="724" rx="150" ry="30" fill="#FFD3A6" opacity="0.55"/>
+  <!-- Lamp: mount, housing and lens lip. -->
+  <rect x="496" y="214" width="32" height="46" rx="10" fill="#FFB066"/>
+  <rect x="424" y="250" width="176" height="78" rx="26" fill="url(#lamp)"/>
+  <rect x="446" y="312" width="132" height="16" rx="8" fill="#FFF1E0"/>
+</svg>
