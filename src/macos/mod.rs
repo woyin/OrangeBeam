@@ -2,6 +2,7 @@
 mod capture;
 mod hotkey;
 pub mod input_access;
+mod panel;
 mod remote;
 pub mod render_qa;
 use capture::Capture;
@@ -15,6 +16,7 @@ use objc2_core_graphics::{
     CGRequestPostEventAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_foundation::*;
+use panel::{Panel, RemoteStatus};
 use spotlight_rs::controls::{format_unrestored, parse_unrestored, Reporting};
 use spotlight_rs::presentation::{BoxView, Effect, Point, Presentation, Rect};
 use spotlight_rs::settings::{
@@ -354,8 +356,6 @@ struct AppData {
     initial_demo: Option<(Effect, f64)>,
     effect_items: RefCell<Vec<Retained<NSMenuItem>>>,
     capture: Retained<Capture>,
-    controls: RefCell<Option<Retained<NSWindow>>>,
-    status_label: RefCell<Option<Retained<NSTextField>>>,
     message: RefCell<String>,
     hotkeys: RefCell<Option<hotkey::HotKeys>>,
     capture_allowed: Cell<bool>,
@@ -364,24 +364,20 @@ struct AppData {
     // Keep a main-thread owner until after the worker joins. MainThreadBound's
     // final drop must never synchronously dispatch to a main thread joining it.
     remote_target: RefCell<Option<Arc<MainThreadBound<Retained<Delegate>>>>>,
-    remote_button: RefCell<Option<Retained<NSButton>>>,
     remote_item: RefCell<Option<Retained<NSMenuItem>>>,
-    remote_label: RefCell<Option<Retained<NSTextField>>>,
-    remote_message: RefCell<String>,
     signals: crate::stop_signals::StopSignals,
     closing: Cell<bool>,
     settings: RefCell<Settings>,
     talk_timer: RefCell<PresentationTimer>,
-    cycle_boxes: RefCell<Vec<Retained<NSButton>>>,
-    hold_popups: RefCell<Vec<Retained<NSPopUpButton>>>,
-    timer_fields: RefCell<Vec<Retained<NSTextField>>>,
-    timer_button: RefCell<Option<Retained<NSButton>>>,
     timer_item: RefCell<Option<Retained<NSMenuItem>>>,
     auto_reconnect: Cell<bool>,
     retry_at: Cell<f64>,
+    panel: RefCell<Option<Panel>>,
+    remote_status: Cell<RemoteStatus>,
+    battery: Cell<Option<(u8, u8)>>,
+    panel_refresh_at: Cell<f64>,
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
-    reminder_popup: RefCell<Option<Retained<NSPopUpButton>>>,
     unrestored: RefCell<remote::Unrestored>,
 }
 
@@ -449,12 +445,38 @@ define_class!(
         }
         #[unsafe(method(showControls:))]
         fn controls(&self, _sender: Option<&AnyObject>) { self.show_controls(); }
-        #[unsafe(method(previewSpotlight:))]
-        fn preview_spotlight(&self, _sender: Option<&AnyObject>) { self.preview_effect(Effect::Spotlight); }
-        #[unsafe(method(previewLaser:))]
-        fn preview_laser(&self, _sender: Option<&AnyObject>) { self.preview_effect(Effect::Laser); }
-        #[unsafe(method(previewMagnify:))]
-        fn preview_magnify(&self, _sender: Option<&AnyObject>) { self.preview_effect(Effect::Magnify); }
+        #[unsafe(method(previewCurrent:))]
+        fn preview_current(&self, _sender: Option<&AnyObject>) {
+            let effect = self.ivars().presentation.borrow().effect;
+            self.preview_effect(effect);
+        }
+        #[unsafe(method(radiusChanged:))]
+        fn radius_changed(&self, sender: &NSSlider) {
+            let radius = spotlight_rs::presentation::clamp_radius(sender.doubleValue());
+            self.ivars().presentation.borrow_mut().radius = radius;
+            self.ivars().settings.borrow_mut().radius = radius;
+            self.save_settings();
+            self.tick();
+        }
+        #[unsafe(method(shadeChanged:))]
+        fn shade_changed(&self, sender: &NSSlider) {
+            let shade = spotlight_rs::settings::clamp_shade(sender.doubleValue());
+            self.ivars().presentation.borrow_mut().shade = shade;
+            self.ivars().settings.borrow_mut().shade = shade;
+            self.save_settings();
+            self.tick();
+        }
+        #[unsafe(method(zoomChanged:))]
+        fn zoom_changed(&self, sender: &NSPopUpButton) {
+            let levels = spotlight_rs::settings::ZOOM_LEVELS;
+            let zoom = levels[sender.indexOfSelectedItem().clamp(0, levels.len() as isize - 1) as usize];
+            self.ivars().presentation.borrow_mut().zoom = zoom;
+            self.ivars().settings.borrow_mut().zoom = zoom;
+            self.save_settings();
+            self.tick();
+        }
+        #[unsafe(method(openPrivacy:))]
+        fn open_privacy_action(&self, sender: &NSButton) { self.open_privacy(sender.tag().max(0) as usize); }
         #[unsafe(method(smaller:))]
         fn smaller(&self, _sender: Option<&AnyObject>) { self.resize_effect(0.8); }
         #[unsafe(method(larger:))]
@@ -506,7 +528,8 @@ define_class!(
                 // A deliberate disconnect also stops automatic reconnection.
                 self.ivars().auto_reconnect.set(false);
                 let _ = self.stop_remote(); // errors are logged inside
-                self.set_remote_message("遥控器已断开，不会自动重连。点击连接可重新使用。");
+                self.set_remote_status(RemoteStatus::Disconnected);
+                self.set_message("遥控器已断开，不会自动重连。点击“连接遥控器”可重新使用。");
             } else {
                 self.ivars().auto_reconnect.set(true);
                 self.start_remote();
@@ -517,23 +540,6 @@ define_class!(
 );
 
 impl Delegate {
-    fn set_remote_message(&self, text: &str) {
-        self.ivars().remote_message.replace(text.to_string());
-        if let Some(label) = self.ivars().remote_label.borrow().as_ref() {
-            label.setStringValue(&NSString::from_str(text));
-        }
-        let title = NSString::from_str(if self.ivars().remote.borrow().is_some() {
-            "断开遥控器"
-        } else {
-            "连接遥控器"
-        });
-        if let Some(button) = self.ivars().remote_button.borrow().as_ref() {
-            button.setTitle(&title);
-        }
-        if let Some(item) = self.ivars().remote_item.borrow().as_ref() {
-            item.setTitle(&title);
-        }
-    }
     fn start_remote(&self) {
         if self.ivars().remote.borrow().is_some() || self.ivars().closing.get() {
             return;
@@ -557,16 +563,21 @@ impl Delegate {
         match started {
             Ok(remote) => {
                 self.ivars().remote.replace(Some(remote));
-                self.set_remote_message("正在连接 Spotlight…");
+                self.set_remote_status(RemoteStatus::Connecting);
             }
             Err(error) => {
                 self.ivars().remote_target.replace(None);
                 self.schedule_reconnect(3.0);
-                self.set_remote_message(&if self.ivars().auto_reconnect.get() {
-                    format!("等待遥控器：{error}（每 3 秒自动重试）")
+                if self.ivars().auto_reconnect.get() {
+                    // Keep "reconnecting" wording after a drop; otherwise waiting.
+                    if self.ivars().remote_status.get() != RemoteStatus::Reconnecting {
+                        self.set_remote_status(RemoteStatus::Waiting);
+                    }
+                    self.set_message(&error.to_string());
                 } else {
-                    format!("无法连接遥控器：{error}")
-                });
+                    self.set_remote_status(RemoteStatus::Disconnected);
+                    self.set_message(&format!("无法连接遥控器：{error}"));
+                }
             }
         }
     }
@@ -621,8 +632,9 @@ impl Delegate {
                 pending.retain(|(cid, _)| !leased.iter().any(|(c, _)| c == cid));
                 pending.extend(leased);
                 Self::save_unrestored(&pending);
-                self.set_remote_message(&format!(
-                    "Spotlight 已通过{transport}连接。按住顶键显示，双击顶键切换特效。{}",
+                self.set_remote_status(RemoteStatus::Connected(transport));
+                self.set_message(&format!(
+                    "按住顶键显示特效，双击顶键切换。{}",
                     warning.unwrap_or_default()
                 ));
             }
@@ -641,6 +653,10 @@ impl Delegate {
                 }
             }
             remote::Event::Message(text) => self.set_message(&text),
+            remote::Event::Battery(level, status) => {
+                self.ivars().battery.set(Some((level, status)));
+                self.refresh_panel(false);
+            }
             remote::Event::PageTurn => {
                 if self.ivars().presentation.borrow().has_box() {
                     self.ivars().presentation.borrow_mut().clear_box();
@@ -692,12 +708,15 @@ impl Delegate {
                 let result = self.stop_remote();
                 if self.ivars().auto_reconnect.get() {
                     self.schedule_reconnect(2.0);
-                    self.set_remote_message(match result {
-                        Ok(()) => "遥控器连接已结束，正在自动重连…",
-                        Err(_) => "遥控器连接中断（可能已休眠或超出范围），正在自动重连…",
-                    });
-                } else if let Err(error) = result {
-                    self.set_remote_message(&format!("遥控器已停止：{error}"));
+                    self.set_remote_status(RemoteStatus::Reconnecting);
+                    if result.is_err() {
+                        self.set_message("遥控器可能已休眠或超出范围；唤醒后会自动连上。");
+                    }
+                } else {
+                    self.set_remote_status(RemoteStatus::Disconnected);
+                    if let Err(error) = result {
+                        self.set_message(&format!("遥控器已停止：{error}"));
+                    }
                 }
                 self.tick();
             }
@@ -768,6 +787,9 @@ impl Delegate {
         };
         self.ivars().settings.borrow_mut().radius = radius;
         self.save_settings();
+        if let Some(panel) = self.ivars().panel.borrow().as_ref() {
+            panel.radius.setDoubleValue(radius);
+        }
         self.set_message(&format!("聚光直径：{} 点", (radius * 2.0).round()));
         self.tick();
     }
@@ -781,11 +803,14 @@ impl Delegate {
     }
     /// Every effect change drops a kept rectangle; it belonged to Box mode.
     fn set_effect(&self, effect: Effect) {
-        let mut state = self.ivars().presentation.borrow_mut();
-        if state.effect != effect {
-            state.clear_box();
+        {
+            let mut state = self.ivars().presentation.borrow_mut();
+            if state.effect != effect {
+                state.clear_box();
+            }
+            state.effect = effect;
         }
-        state.effect = effect;
+        self.refresh_panel(false);
     }
     fn show_toast(&self, text: &str) {
         let mtm = self.mtm();
@@ -942,8 +967,8 @@ impl Delegate {
             self.set_message("计时已停止。");
         } else {
             // The panel fields are authoritative when the panel has been opened.
-            let fields = self.ivars().timer_fields.borrow();
-            if !fields.is_empty() {
+            let panel = self.ivars().panel.borrow();
+            if let Some(fields) = panel.as_ref().map(|p| &p.timer_fields) {
                 let mut timers = [None; 3];
                 for (slot, field) in timers.iter_mut().zip(fields.iter()) {
                     match parse_minutes(&field.stringValue().to_string()) {
@@ -956,7 +981,7 @@ impl Delegate {
                 }
                 self.ivars().settings.borrow_mut().timers = timers;
             }
-            drop(fields);
+            drop(panel);
             self.save_settings();
             let timers = self.ivars().settings.borrow().timers;
             if timers.iter().all(Option::is_none) {
@@ -984,9 +1009,7 @@ impl Delegate {
         } else {
             "开始计时"
         });
-        if let Some(button) = self.ivars().timer_button.borrow().as_ref() {
-            button.setTitle(&title);
-        }
+        self.refresh_panel(false);
         if let Some(item) = self.ivars().timer_item.borrow().as_ref() {
             item.setTitle(&title);
         }
@@ -1042,15 +1065,6 @@ impl Delegate {
             ));
         }
     }
-    fn set_message(&self, text: &str) {
-        if *self.ivars().message.borrow() == text {
-            return;
-        }
-        self.ivars().message.replace(text.to_string());
-        if let Some(label) = self.ivars().status_label.borrow().as_ref() {
-            label.setStringValue(&NSString::from_str(text));
-        }
-    }
     fn allow_effect(&self, effect: Effect) -> bool {
         if effect != Effect::Magnify {
             return true;
@@ -1075,240 +1089,6 @@ impl Delegate {
             .preview(self.now(), 10.0);
         self.set_message("移动鼠标查看效果；预览会在 10 秒后自动结束。");
         self.tick();
-    }
-    fn show_controls(&self) {
-        if self.ivars().controls.borrow().is_none() {
-            let mtm = self.mtm();
-            // SAFETY: Native controls and target/action references live on main.
-            unsafe {
-                let window = NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    NSRect::new(NSPoint::ZERO, NSSize::new(480.0, 620.0)),
-                    NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Miniaturizable,
-                    NSBackingStoreType::Buffered,
-                    false,
-                );
-                window.setReleasedWhenClosed(false);
-                window.setTitle(ns_string!("Spotlight RS"));
-                window.center();
-                let view = window.contentView().expect("window content view");
-                let title = NSTextField::labelWithString(ns_string!("Spotlight RS"), mtm);
-                title.setFont(Some(&NSFont::boldSystemFontOfSize(26.0)));
-                title.setFrame(NSRect::new(
-                    NSPoint::new(28.0, 555.0),
-                    NSSize::new(424.0, 36.0),
-                ));
-                view.addSubview(&title);
-                let subtitle =
-                    NSTextField::labelWithString(ns_string!("用光线，把注意力留在重点。"), mtm);
-                subtitle.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                subtitle.setFrame(NSRect::new(
-                    NSPoint::new(28.0, 524.0),
-                    NSSize::new(424.0, 24.0),
-                ));
-                view.addSubview(&subtitle);
-                let remote_label = NSTextField::wrappingLabelWithString(
-                    &NSString::from_str(&self.ivars().remote_message.borrow()),
-                    mtm,
-                );
-                remote_label.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-                remote_label.setFrame(NSRect::new(
-                    NSPoint::new(28.0, 444.0),
-                    NSSize::new(424.0, 70.0),
-                ));
-                view.addSubview(&remote_label);
-                self.ivars().remote_label.replace(Some(remote_label));
-                for (index, (text, action)) in [
-                    ("预览聚光", sel!(previewSpotlight:)),
-                    ("预览激光", sel!(previewLaser:)),
-                    ("预览放大", sel!(previewMagnify:)),
-                ]
-                .iter()
-                .enumerate()
-                {
-                    let button = NSButton::buttonWithTitle_target_action(
-                        &NSString::from_str(text),
-                        Some(self),
-                        Some(*action),
-                        mtm,
-                    );
-                    button.setFrame(NSRect::new(
-                        NSPoint::new(24.0 + index as f64 * 145.0, 400.0),
-                        NSSize::new(138.0, 36.0),
-                    ));
-                    view.addSubview(&button);
-                }
-                let hide = NSButton::buttonWithTitle_target_action(
-                    ns_string!("立即隐藏"),
-                    Some(self),
-                    Some(sel!(hide:)),
-                    mtm,
-                );
-                hide.setFrame(NSRect::new(
-                    NSPoint::new(24.0, 352.0),
-                    NSSize::new(138.0, 32.0),
-                ));
-                view.addSubview(&hide);
-                let connect = NSButton::buttonWithTitle_target_action(
-                    ns_string!("连接遥控器"),
-                    Some(self),
-                    Some(sel!(toggleRemote:)),
-                    mtm,
-                );
-                connect.setFrame(NSRect::new(
-                    NSPoint::new(169.0, 352.0),
-                    NSSize::new(138.0, 32.0),
-                ));
-                view.addSubview(&connect);
-                self.ivars().remote_button.replace(Some(connect));
-                let quit = NSButton::buttonWithTitle_target_action(
-                    ns_string!("退出"),
-                    Some(self),
-                    Some(sel!(quit:)),
-                    mtm,
-                );
-                quit.setFrame(NSRect::new(
-                    NSPoint::new(314.0, 352.0),
-                    NSSize::new(138.0, 32.0),
-                ));
-                view.addSubview(&quit);
-                self.add_settings_controls(&view);
-                let label = NSTextField::wrappingLabelWithString(ns_string!("预览持续 10 秒。⌃⌥⌘H 立即隐藏（含黑屏）；关闭窗口后，从菜单栏 ◎ 继续控制。"), mtm);
-                label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                label.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-                label.setFrame(NSRect::new(
-                    NSPoint::new(28.0, 12.0),
-                    NSSize::new(424.0, 76.0),
-                ));
-                if !self.ivars().message.borrow().is_empty() {
-                    label.setStringValue(&NSString::from_str(&self.ivars().message.borrow()));
-                }
-                view.addSubview(&label);
-                self.ivars().status_label.replace(Some(label));
-                self.ivars().controls.replace(Some(window));
-            }
-        }
-        if let Some(window) = self.ivars().controls.borrow().as_ref() {
-            window.makeKeyAndOrderFront(None);
-        }
-        #[allow(deprecated)]
-        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
-    }
-    fn add_settings_controls(&self, view: &NSView) {
-        let mtm = self.mtm();
-        let frame =
-            |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
-        let heading = |text: &str, y: f64| {
-            let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-            label.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-            label.setFrame(frame(28.0, y, 424.0, 20.0));
-            view.addSubview(&label);
-        };
-        let settings = self.ivars().settings.borrow().clone();
-        heading("双击顶键在以下特效间切换", 316.0);
-        let mut boxes = Vec::new();
-        for (slot, effect) in EFFECTS.iter().enumerate() {
-            // SAFETY: target/action refer to this main-thread delegate's selector.
-            let button = unsafe {
-                NSButton::checkboxWithTitle_target_action(
-                    &NSString::from_str(Self::effect_name(*effect)),
-                    Some(self),
-                    Some(sel!(cycleChanged:)),
-                    mtm,
-                )
-            };
-            button.setTag(slot as isize);
-            button.setState(if settings.cycle[slot] { 1 } else { 0 });
-            button.setFrame(frame(28.0 + slot as f64 * 106.0, 288.0, 104.0, 24.0));
-            view.addSubview(&button);
-            boxes.push(button);
-        }
-        self.ivars().cycle_boxes.replace(boxes);
-        let mut popups = Vec::new();
-        for (tag, (text, action, y)) in [
-            ("长按下一页", settings.next_hold, 244.0),
-            ("长按上一页", settings.back_hold, 208.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-            label.setFrame(frame(28.0, y + 4.0, 100.0, 20.0));
-            view.addSubview(&label);
-            let popup = NSPopUpButton::initWithFrame_pullsDown(
-                NSPopUpButton::alloc(mtm),
-                frame(130.0, y, 220.0, 28.0),
-                false,
-            );
-            for choice in HoldAction::ALL {
-                popup.addItemWithTitle(&NSString::from_str(choice.label()));
-            }
-            let selected = HoldAction::ALL
-                .iter()
-                .position(|a| *a == action)
-                .unwrap_or(0);
-            popup.selectItemAtIndex(selected as isize);
-            popup.setTag(tag as isize);
-            // SAFETY: target/action refer to this main-thread delegate's selector.
-            unsafe {
-                popup.setTarget(Some(self));
-                popup.setAction(Some(sel!(holdChanged:)));
-            }
-            view.addSubview(&popup);
-            popups.push(popup);
-        }
-        self.ivars().hold_popups.replace(popups);
-        heading("计时器（分钟，留空不用；到点遥控器振动）", 168.0);
-        let mut fields = Vec::new();
-        for (slot, minutes) in settings.timers.iter().enumerate() {
-            let field = NSTextField::textFieldWithString(
-                &NSString::from_str(&minutes.map(|m| m.to_string()).unwrap_or_default()),
-                mtm,
-            );
-            field.setPlaceholderString(Some(&NSString::from_str(&format!("定时 {}", slot + 1))));
-            field.setFrame(frame(28.0 + slot as f64 * 80.0, 134.0, 70.0, 24.0));
-            view.addSubview(&field);
-            fields.push(field);
-        }
-        self.ivars().timer_fields.replace(fields);
-        // SAFETY: target/action refer to this main-thread delegate's selector.
-        let start = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("开始计时"),
-                Some(self),
-                Some(sel!(toggleTimer:)),
-                mtm,
-            )
-        };
-        start.setFrame(frame(280.0, 128.0, 172.0, 32.0));
-        view.addSubview(&start);
-        self.ivars().timer_button.replace(Some(start));
-        let label = NSTextField::labelWithString(ns_string!("屏幕提醒"), mtm);
-        label.setFrame(frame(28.0, 100.0, 100.0, 20.0));
-        view.addSubview(&label);
-        let popup = NSPopUpButton::initWithFrame_pullsDown(
-            NSPopUpButton::alloc(mtm),
-            frame(130.0, 96.0, 220.0, 28.0),
-            false,
-        );
-        for mode in ScreenReminder::ALL {
-            popup.addItemWithTitle(&NSString::from_str(mode.label()));
-        }
-        let selected = ScreenReminder::ALL
-            .iter()
-            .position(|m| *m == settings.screen_reminder)
-            .unwrap_or(1);
-        popup.selectItemAtIndex(selected as isize);
-        // SAFETY: target/action refer to this main-thread delegate's selector.
-        unsafe {
-            popup.setTarget(Some(self));
-            popup.setAction(Some(sel!(reminderChanged:)));
-        }
-        view.addSubview(&popup);
-        self.ivars().reminder_popup.replace(Some(popup));
-        self.update_timer_ui();
     }
     fn item(
         &self,
@@ -1430,6 +1210,11 @@ impl Delegate {
             return;
         }
         self.maybe_reconnect();
+        if now >= self.ivars().panel_refresh_at.get() {
+            // Once a second: elapsed time and privacy state granted meanwhile.
+            self.ivars().panel_refresh_at.set(now + 1.0);
+            self.refresh_panel(true);
+        }
         if now - self.ivars().screen_check.get() >= 1.0 {
             self.refresh_screens();
             self.ivars().screen_check.set(now);
@@ -1537,6 +1322,8 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         presentation: RefCell::new({
             let mut state = Presentation::default();
             state.radius = settings.radius;
+            state.shade = settings.shade;
+            state.zoom = settings.zoom;
             state
         }),
         overlays: RefCell::new(Vec::new()),
@@ -1548,32 +1335,26 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         initial_demo: demo,
         effect_items: RefCell::new(Vec::new()),
         capture: Capture::new(mtm),
-        controls: RefCell::new(None),
-        status_label: RefCell::new(None),
         message: RefCell::new(String::new()),
         hotkeys: RefCell::new(None),
         capture_allowed: Cell::new(CGPreflightScreenCaptureAccess()),
         remote: RefCell::new(None),
         remote_epoch: Cell::new(0),
         remote_target: RefCell::new(None),
-        remote_button: RefCell::new(None),
         remote_item: RefCell::new(None),
-        remote_label: RefCell::new(None),
-        remote_message: RefCell::new("遥控器未连接。".into()),
         signals: crate::stop_signals::StopSignals::install()?,
         closing: Cell::new(false),
         settings: RefCell::new(settings),
         talk_timer: RefCell::new(PresentationTimer::default()),
-        cycle_boxes: RefCell::new(Vec::new()),
-        hold_popups: RefCell::new(Vec::new()),
-        timer_fields: RefCell::new(Vec::new()),
-        timer_button: RefCell::new(None),
         timer_item: RefCell::new(None),
         auto_reconnect: Cell::new(true),
         retry_at: Cell::new(0.0),
+        panel: RefCell::new(None),
+        remote_status: Cell::new(RemoteStatus::Connecting),
+        battery: Cell::new(None),
+        panel_refresh_at: Cell::new(0.0),
         toast: RefCell::new(None),
         toast_until: Cell::new(0.0),
-        reminder_popup: RefCell::new(None),
         unrestored: RefCell::new(Delegate::load_unrestored()),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };

@@ -129,6 +129,9 @@ impl Presentation {
             || (self.effect == Effect::Box
                 && (self.box_rect.is_some() || self.box_anchor.is_some()))
     }
+    fn previewing(&self, now: f64) -> bool {
+        self.preview_until.is_some_and(|deadline| now < deadline)
+    }
     fn flashing(&self, now: f64) -> bool {
         self.flash_until.is_some_and(|deadline| now < deadline)
     }
@@ -177,8 +180,8 @@ impl Presentation {
             (_, Some(anchor), _) if held => Some(BoxView::Rect(Rect::spanning(anchor, pointer))),
             (_, Some(anchor), _) => Some(BoxView::Anchor(anchor)),
             (_, _, Some(rect)) => Some(BoxView::Rect(rect)),
-            // Nothing drawn yet: a sample rectangle confirms the switch.
-            _ if self.flashing(now) => Some(BoxView::Rect(Rect {
+            // Nothing drawn yet: a sample rectangle confirms a switch or preview.
+            _ if self.flashing(now) || self.previewing(now) => Some(BoxView::Rect(Rect {
                 x: pointer.x - SAMPLE_BOX.0 / 2.0,
                 y: pointer.y - SAMPLE_BOX.1 / 2.0,
                 width: SAMPLE_BOX.0,
@@ -372,6 +375,8 @@ mod tests {
             }))
         );
         assert_eq!(b.box_view(p, 2.5), None);
+        b.preview(3.0, 10.0);
+        assert!(matches!(b.box_view(p, 4.0), Some(BoxView::Rect(_))));
     }
     #[test]
     fn rectangles_intersect_only_when_overlapping() {

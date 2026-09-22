@@ -50,6 +50,25 @@ impl ScreenReminder {
 }
 pub const MAX_TIMERS: usize = 3;
 pub const MAX_TIMER_MINUTES: u32 = 600;
+pub const ZOOM_LEVELS: [f64; 4] = [1.5, 2.0, 3.0, 4.0];
+pub const DEFAULT_SHADE: f64 = 0.6;
+
+/// Dimming outside the spotlight/box; kept visible but never fully black.
+pub fn clamp_shade(shade: f64) -> f64 {
+    if shade.is_finite() {
+        shade.clamp(0.2, 0.9)
+    } else {
+        DEFAULT_SHADE
+    }
+}
+
+/// Nearest supported magnifier level.
+pub fn nearest_zoom(zoom: f64) -> f64 {
+    ZOOM_LEVELS
+        .into_iter()
+        .min_by(|a, b| (a - zoom).abs().total_cmp(&(b - zoom).abs()))
+        .unwrap_or(2.0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldAction {
@@ -100,6 +119,8 @@ pub struct Settings {
     pub timers: [Option<u32>; MAX_TIMERS],
     /// Spotlight/magnifier radius in points.
     pub radius: f64,
+    pub shade: f64,
+    pub zoom: f64,
     pub screen_reminder: ScreenReminder,
 }
 
@@ -111,6 +132,8 @@ impl Default for Settings {
             back_hold: HoldAction::BlackScreen,
             timers: [None; MAX_TIMERS],
             radius: DEFAULT_RADIUS,
+            shade: DEFAULT_SHADE,
+            zoom: 2.0,
             screen_reminder: ScreenReminder::OnVibrationFailure,
         }
     }
@@ -170,6 +193,18 @@ impl Settings {
                         settings.screen_reminder = mode;
                     }
                 }
+                "shade" => {
+                    if let Ok(shade) = value.parse::<f64>() {
+                        settings.shade = clamp_shade(shade);
+                    }
+                }
+                "zoom" => {
+                    if let Ok(zoom) = value.parse::<f64>() {
+                        if zoom.is_finite() {
+                            settings.zoom = nearest_zoom(zoom);
+                        }
+                    }
+                }
                 "radius" => {
                     if let Ok(radius) = value.parse::<f64>() {
                         settings.radius = clamp_radius(radius);
@@ -194,12 +229,14 @@ impl Settings {
             .map(|t| t.map(|m| m.to_string()).unwrap_or_default())
             .collect();
         format!(
-            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\nradius={}\nscreen-reminder={}\n",
+            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\nradius={}\nshade={:.2}\nzoom={}\nscreen-reminder={}\n",
             cycle.join(","),
             self.next_hold.key(),
             self.back_hold.key(),
             timers.join(","),
             self.radius.round(),
+            self.shade,
+            self.zoom,
             self.screen_reminder.key()
         )
     }
@@ -279,6 +316,8 @@ mod tests {
             back_hold: HoldAction::None,
             timers: [Some(15), None, Some(30)],
             radius: 220.0,
+            shade: 0.45,
+            zoom: 3.0,
             screen_reminder: ScreenReminder::Always,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
@@ -288,6 +327,10 @@ mod tests {
         assert_eq!(damaged.cycle, [false; 4]);
         assert_eq!(Settings::parse("radius=9999\n").radius, 500.0);
         assert_eq!(Settings::parse("radius=NaN\n").radius, DEFAULT_RADIUS);
+        assert_eq!(Settings::parse("shade=5\n").shade, 0.9);
+        assert_eq!(Settings::parse("shade=inf\n").shade, DEFAULT_SHADE);
+        assert_eq!(Settings::parse("zoom=2.4\n").zoom, 2.0);
+        assert_eq!(Settings::parse("zoom=99\n").zoom, 4.0);
     }
 
     #[test]

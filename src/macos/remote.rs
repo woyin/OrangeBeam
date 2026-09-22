@@ -32,6 +32,8 @@ pub enum Event {
     /// The vibration carrying this reminder text could not be delivered.
     VibrationFailed(String),
     Message(String),
+    /// Battery percentage and BATTERY_STATUS state byte (1–3 = charging).
+    Battery(u8, u8),
     /// The worker ended; its result and leftovers come from `Remote::stop`.
     Stopped,
 }
@@ -179,8 +181,11 @@ fn run(
     let index = 1;
     let feature =
         crate::resolve_feature(&device, index, 0x1b04)?.ok_or("遥控器未提供顶键控制功能。")?;
-    // Vibration is optional; a failed lookup only disables timer vibration.
+    // Vibration and battery are optional; a failed lookup only hides them.
     let presenter = crate::resolve_feature(&device, index, 0x1a00)
+        .ok()
+        .flatten();
+    let battery = crate::resolve_feature(&device, index, 0x1000)
         .ok()
         .flatten();
     if stop.load(Ordering::Relaxed) {
@@ -250,6 +255,8 @@ fn run(
     let captured: crate::Result<()> = (|| {
         let mut buffer = [0; 64];
         let mut paused = false;
+        // Read at once, then every five minutes; the device reports coarse steps.
+        let mut battery_due = std::time::Instant::now();
         let mut keys_down = false;
         while !stop.load(Ordering::Relaxed) {
             while let Ok(command) = inbox.try_recv() {
@@ -269,6 +276,18 @@ fn run(
                             notify(Event::VibrationFailed(reminder));
                         }
                     }
+                }
+            }
+            if let Some(battery) = battery.filter(|_| std::time::Instant::now() >= battery_due) {
+                battery_due = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let request = Report::request(index, battery, 0, SOFTWARE_ID, &[])?;
+                match crate::transact_observing(&device, &request, &mut |r| buttons.handle(r)) {
+                    Ok(reply) if reply.payload().len() >= 3 => {
+                        let p = reply.payload();
+                        notify(Event::Battery(p[0].min(100), p[2]));
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("REMOTE battery read failed: {error}"),
                 }
             }
             // Secure Input (a focused password field) blocks HID reads. Pause
