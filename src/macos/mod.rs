@@ -255,7 +255,8 @@ impl Overlay {
         // SAFETY: AppKit calls use the main thread. Panel ownership is retained here,
         // and automatic release-on-close is disabled before the panel can be shown.
         unsafe {
-            let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: false];
+            // Deferred: no window-server backing until the overlay is first shown.
+            let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: true];
             panel.setReleasedWhenClosed(false);
             panel.setOpaque(false);
             panel.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -899,7 +900,7 @@ impl Delegate {
         if self.ivars().toast.borrow().is_none() {
             // SAFETY: AppKit calls stay on main; the panel is retained by AppData.
             let (panel, label) = unsafe {
-                let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: NSRect::new(origin, size), styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: false];
+                let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: NSRect::new(origin, size), styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: true];
                 panel.setReleasedWhenClosed(false);
                 panel.setOpaque(false);
                 panel.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -1283,8 +1284,15 @@ impl Delegate {
             return;
         }
         self.maybe_reconnect();
-        if now >= self.ivars().panel_refresh_at.get() {
-            // Once a second: elapsed time and privacy state granted meanwhile.
+        let panel_visible = self
+            .ivars()
+            .panel
+            .borrow()
+            .as_ref()
+            .is_some_and(|panel| panel.window.isVisible());
+        if panel_visible && now >= self.ivars().panel_refresh_at.get() {
+            // Once a second while shown: elapsed time and privacy state granted
+            // meanwhile. A closed panel is refreshed again when reopened.
             self.ivars().panel_refresh_at.set(now + 1.0);
             self.refresh_panel(true);
         }

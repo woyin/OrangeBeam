@@ -126,8 +126,8 @@ impl Delegate {
         if self.ivars().panel.borrow().is_none() {
             let panel = self.build_panel();
             self.ivars().panel.replace(Some(panel));
-            self.refresh_panel(true);
         }
+        self.refresh_panel(true);
         if let Some(panel) = self.ivars().panel.borrow().as_ref() {
             panel.window.makeKeyAndOrderFront(None);
         }
