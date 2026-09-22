@@ -481,6 +481,56 @@ impl Overlay {
     }
 }
 
+/// Opt-in frame timing (ORANGE_BEAM_TRACE_FRAMES=1): timer intervals and
+/// per-frame work while an effect is shown, summarised to stderr when it ends.
+#[derive(Default)]
+struct FrameTrace {
+    enabled: bool,
+    last: Option<(f64, (f64, f64))>,
+    intervals: Vec<f64>,
+    work: Vec<f64>,
+    moved: usize,
+}
+
+impl FrameTrace {
+    fn record(&mut self, at: f64, work: f64, pointer: (f64, f64), active: bool) {
+        if !self.enabled {
+            return;
+        }
+        if !active {
+            self.report();
+            return;
+        }
+        if let Some((previous, last_pointer)) = self.last {
+            self.intervals.push((at - previous) * 1000.0);
+            self.moved += usize::from(pointer != last_pointer);
+        }
+        self.work.push(work * 1000.0);
+        self.last = Some((at, pointer));
+    }
+    fn report(&mut self) {
+        self.last = None;
+        if self.intervals.len() >= 10 {
+            let stats = |values: &mut Vec<f64>| {
+                values.sort_by(f64::total_cmp);
+                let at = |q: f64| values[((values.len() - 1) as f64 * q) as usize];
+                (at(0.5), at(0.95), at(1.0))
+            };
+            let late = self.intervals.iter().filter(|ms| **ms > 20.0).count();
+            let frames = self.intervals.len();
+            let (i50, i95, imax) = stats(&mut self.intervals);
+            let (w50, w95, wmax) = stats(&mut self.work);
+            eprintln!(
+                "FRAMES n={frames} moved={} interval_ms p50={i50:.1} p95={i95:.1} max={imax:.1} late(>20ms)={late} work_ms p50={w50:.2} p95={w95:.2} max={wmax:.2}",
+                self.moved
+            );
+        }
+        self.intervals.clear();
+        self.work.clear();
+        self.moved = 0;
+    }
+}
+
 struct AppData {
     start: Instant,
     presentation: RefCell<Presentation>,
@@ -514,6 +564,7 @@ struct AppData {
     battery: Cell<Option<(u8, u8)>>,
     panel_refresh_at: Cell<f64>,
     permission_refresh_at: Cell<f64>,
+    frame_trace: RefCell<FrameTrace>,
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
     unrestored: RefCell<remote::Unrestored>,
@@ -557,7 +608,13 @@ define_class!(
     }
     impl Delegate {
         #[unsafe(method(tick:))]
-        fn on_timer(&self, _timer: &NSTimer) { self.tick(); }
+        fn on_timer(&self, _timer: &NSTimer) {
+            let started = self.now();
+            let mouse = NSEvent::mouseLocation();
+            self.tick();
+            let active = self.ivars().fast_timer.get();
+            self.ivars().frame_trace.borrow_mut().record(started, self.now() - started, (mouse.x, mouse.y), active);
+        }
         #[unsafe(method(toggle:))]
         fn toggle(&self, _sender: Option<&AnyObject>) {
             self.ivars().presentation.borrow_mut().toggle(self.now());
@@ -1531,6 +1588,10 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         battery: Cell::new(None),
         panel_refresh_at: Cell::new(0.0),
         permission_refresh_at: Cell::new(0.0),
+        frame_trace: RefCell::new(FrameTrace {
+            enabled: std::env::var_os("ORANGE_BEAM_TRACE_FRAMES").is_some(),
+            ..Default::default()
+        }),
         toast: RefCell::new(None),
         toast_until: Cell::new(0.0),
         unrestored: RefCell::new(Delegate::load_unrestored()),
