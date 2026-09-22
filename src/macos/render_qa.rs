@@ -75,6 +75,7 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         ("spotlight", Effect::Spotlight),
         ("laser", Effect::Laser),
         ("magnify", Effect::Magnify),
+        ("box", Effect::Box),
     ] {
         let view = OverlayView::alloc(mtm).set_ivars(ViewData::default());
         let view: Retained<OverlayView> = unsafe { msg_send![super(view), initWithFrame: bounds] };
@@ -86,6 +87,12 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         data.zoom.set(2.0);
         if effect == Effect::Magnify {
             data.image.replace(Some(source.clone()));
+        }
+        if effect == Effect::Box {
+            data.box_draw.set(BoxDraw::Rect(NSRect::new(
+                NSPoint::new(300.0, 150.0),
+                NSSize::new(200.0, 150.0),
+            )));
         }
         let layer = bitmap()?;
         context(&layer)?;
@@ -107,6 +114,9 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
             }
             Effect::Magnify if center_alpha < 0.99 => {
                 return Err("Magnifier image check failed".into())
+            }
+            Effect::Box if (corner_alpha - 0.6).abs() > 0.02 || center_alpha > 0.01 => {
+                return Err("Box transparency check failed".into())
             }
             _ => {}
         }

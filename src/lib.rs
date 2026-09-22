@@ -5,6 +5,7 @@ use std::fmt;
 
 pub mod controls;
 pub mod presentation;
+pub mod settings;
 
 pub const LOGITECH_VENDOR: u16 = 0x046d;
 pub const SOFTWARE_ID: u8 = 0x0a;

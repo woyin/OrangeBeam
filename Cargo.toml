@@ -16,7 +16,7 @@ libc = "0.2"
 objc2 = "0.6.3"
 block2 = "0.6.2"
 objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSView", "NSScreen", "NSEvent", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSCell", "NSButtonCell", "NSColor", "NSBezierPath", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAlert", "NSTextField", "NSText", "NSFont", "NSRunningApplication", "NSWorkspace", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSView", "NSScreen", "NSEvent", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSCell", "NSButtonCell", "NSColor", "NSBezierPath", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAlert", "NSTextField", "NSText", "NSFont", "NSRunningApplication", "NSWorkspace", "NSPopUpButton", "libc", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
 objc2-core-graphics = "0.3.2"
 objc2-screen-capture-kit = "0.3.2"
 objc2-core-media = "0.3.2"

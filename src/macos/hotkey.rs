@@ -109,30 +109,30 @@ impl HotKeys {
         if status != 0 {
             return Err(format!("快捷键初始化失败：{status}"));
         }
-        // ANSI P toggles with Command+Option. H hides with Control+Command+Option,
-        // avoiding macOS's standard Command+Option+H (Hide Others).
-        for (code, id) in [(35, 1), (4, 2)] {
-            let mut key = std::ptr::null_mut();
-            let status = unsafe {
-                RegisterEventHotKey(
-                    code,
-                    if id == 1 { 0x900 } else { 0x1900 },
-                    HotKeyId {
-                        signature: u32::from_be_bytes(*b"SpRS"),
-                        id,
-                    },
-                    event_target,
-                    0,
-                    &mut key,
-                )
-            };
-            if status != 0 {
-                return Err(format!(
-                    "快捷键被占用或无法注册：{status}。仍可使用菜单栏。"
-                ));
-            }
-            result.keys.push(key);
+        // Only an emergency hide: ANSI H with Control+Option+Command, avoiding
+        // macOS's standard Command+Option+H (Hide Others). The app takes no
+        // other global shortcut, so presentation apps keep theirs (e.g. Keynote
+        // uses Command+Option+P to play).
+        let mut key = std::ptr::null_mut();
+        let status = unsafe {
+            RegisterEventHotKey(
+                4,
+                0x1900,
+                HotKeyId {
+                    signature: u32::from_be_bytes(*b"SpRS"),
+                    id: 2,
+                },
+                event_target,
+                0,
+                &mut key,
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "快捷键被占用或无法注册：{status}。仍可使用菜单栏。"
+            ));
         }
+        result.keys.push(key);
         Ok(result)
     }
 }
