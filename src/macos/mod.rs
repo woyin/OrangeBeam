@@ -317,6 +317,9 @@ define_class!(
 struct Overlay {
     panel: Retained<OverlayPanel>,
     view: Retained<OverlayView>,
+    /// Panels stay ordered in; "hidden" means fully transparent, so showing
+    /// needs neither a new backing store nor a full-screen repaint.
+    shown: Cell<bool>,
     frame: NSRect,
     display_id: u32,
     scale: f64,
@@ -332,14 +335,13 @@ fn display_id(screen: &NSScreen) -> u32 {
 }
 
 impl Overlay {
-    fn new(mtm: MainThreadMarker, screen: &NSScreen) -> Self {
+    fn new(mtm: MainThreadMarker, screen: &NSScreen, state: &Presentation) -> Self {
         let frame = screen.frame();
         let display_id = display_id(screen);
         // SAFETY: AppKit calls use the main thread. Panel ownership is retained here,
         // and automatic release-on-close is disabled before the panel can be shown.
         unsafe {
-            // Deferred: no window-server backing until the overlay is first shown.
-            let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: true];
+            let panel: Retained<OverlayPanel> = msg_send![OverlayPanel::alloc(mtm), initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel, backing: NSBackingStoreType::Buffered, defer: false];
             panel.setReleasedWhenClosed(false);
             panel.setOpaque(false);
             panel.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -359,9 +361,24 @@ impl Overlay {
             let view: Retained<OverlayView> =
                 msg_send![super(view), initWithFrame: NSRect::new(NSPoint::ZERO, frame.size)];
             panel.setContentView(Some(&view));
+            // Pre-render the current effect centred on the screen while fully
+            // transparent, so the first press only repaints the moved circle.
+            let data = view.ivars();
+            data.effect.set(state.effect);
+            data.radius.set(state.radius);
+            data.shade.set(state.shade);
+            data.zoom.set(state.zoom);
+            data.center.set(NSPoint::new(
+                frame.size.width / 2.0,
+                frame.size.height / 2.0,
+            ));
+            panel.setAlphaValue(0.0);
+            panel.orderFrontRegardless();
+            view.display();
             Self {
                 panel,
                 view,
+                shown: Cell::new(false),
                 frame,
                 display_id,
                 scale: screen.backingScaleFactor(),
@@ -369,33 +386,42 @@ impl Overlay {
         }
     }
     fn hide(&self) {
-        self.panel.orderOut(None);
+        if self.shown.replace(false) {
+            self.panel.setAlphaValue(0.0);
+        }
         self.view.ivars().image.replace(None);
+    }
+    /// Remove the panel for good (display configuration changed).
+    fn retire(&self) {
+        self.panel.orderOut(None);
+        self.panel.close();
+    }
+    fn set_level(&self, level: NSWindowLevel) {
+        if self.panel.level() != level {
+            self.panel.setLevel(level);
+        }
     }
     fn render_blackout(&self) {
         // Above the menu bar and Dock, which sit over the floating level.
-        self.panel.setLevel(NSScreenSaverWindowLevel);
+        self.set_level(NSScreenSaverWindowLevel);
         let data = self.view.ivars();
+        let before = data.look();
         data.image.replace(None);
-        if !data.black.replace(true) || !self.panel.isVisible() {
-            self.view.setNeedsDisplay(true);
-        }
-        if !self.panel.isVisible() {
-            self.panel.orderFrontRegardless();
-        }
+        data.black.set(true);
+        self.repaint(before, false);
     }
-    /// Invalidate only what changed since `before`; a hidden panel may hold a
-    /// stale frame, so showing it always repaints everything.
+    /// Invalidate only what changed since `before`. The transparent panel
+    /// keeps its last frame, so revealing it is incremental too; it is drawn
+    /// synchronously first so no stale frame is ever visible.
     fn repaint(&self, before: Look, content_changed: bool) {
-        let visible = self.panel.isVisible();
         match repaint_region(before, self.view.ivars().look(), content_changed) {
-            _ if !visible => self.view.setNeedsDisplay(true),
             None => self.view.setNeedsDisplay(true),
             Some(Some(dirty)) => self.view.setNeedsDisplayInRect(dirty),
             Some(None) => {}
         }
-        if !visible {
-            self.panel.orderFrontRegardless();
+        if !self.shown.replace(true) {
+            self.view.displayIfNeeded();
+            self.panel.setAlphaValue(1.0);
         }
     }
     fn global_frame(&self) -> Rect {
@@ -425,7 +451,7 @@ impl Overlay {
             self.hide();
             return;
         };
-        self.panel.setLevel(NSFloatingWindowLevel);
+        self.set_level(NSFloatingWindowLevel);
         let data = self.view.ivars();
         let before = data.look();
         data.image.replace(None);
@@ -469,7 +495,7 @@ impl Overlay {
         } else {
             data.image.replace(None);
         }
-        self.panel.setLevel(NSFloatingWindowLevel);
+        self.set_level(NSFloatingWindowLevel);
         data.black.set(false);
         data.center.set(NSPoint::new(local.x, local.y));
         data.effect.set(state.effect);
@@ -602,7 +628,7 @@ define_class!(
             if let Some(timer) = self.ivars().timer.borrow_mut().take() { timer.invalidate(); }
             self.ivars().hotkeys.replace(None);
             self.ivars().capture.stop();
-            for overlay in self.ivars().overlays.borrow().iter() { overlay.hide(); }
+            for overlay in self.ivars().overlays.borrow().iter() { overlay.retire(); }
             let _ = self.stop_remote(); // errors are logged inside
         }
     }
@@ -890,7 +916,7 @@ impl Delegate {
                     .overlays
                     .borrow()
                     .iter()
-                    .filter(|o| o.panel.isVisible())
+                    .filter(|o| o.shown.get())
                     .count();
                 eprintln!(
                     "REMOTE TOP {} overlay_windows_visible={visible}",
@@ -1405,12 +1431,13 @@ impl Delegate {
         }
         let mut overlays = self.ivars().overlays.borrow_mut();
         for overlay in overlays.iter() {
-            overlay.hide();
+            overlay.retire();
         }
         self.ivars().capture.stop();
+        let state = self.ivars().presentation.borrow();
         *overlays = screens
             .iter()
-            .map(|screen| Overlay::new(self.mtm(), &screen))
+            .map(|screen| Overlay::new(self.mtm(), &screen, &state))
             .collect();
     }
     fn tick(&self) {
@@ -1505,7 +1532,7 @@ impl Delegate {
                 }
             } else if active {
                 overlay.render(pointer, &state, &self.ivars().capture);
-            } else if overlay.panel.isVisible() {
+            } else if overlay.shown.get() {
                 overlay.hide();
             }
         }
