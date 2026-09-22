@@ -1,5 +1,8 @@
-use spotlight_rs::controls::notification_address;
-use spotlight_rs::controls::{top_button_state, Result, TemporaryTopButton};
+use spotlight_rs::controls::{
+    active_controls, top_button_state, Reporting, Result, TemporaryTopButton, BACK_HOLD, NEXT_HOLD,
+    SWITCH_HIGHLIGHT, TOP_HOLD,
+};
+use spotlight_rs::controls::{format_unrestored, notification_address, parse_unrestored};
 use spotlight_rs::presentation::Presentation;
 use spotlight_rs::Report;
 
@@ -14,13 +17,23 @@ struct Device {
     reject_restore: bool,
     corrupt_readback: bool,
     empty_ack: bool,
+    /// Control under test; zero means the top hold (0x00d8).
+    cid: u16,
 }
 
 impl Device {
     fn exchange(&mut self, request: &Report) -> Result<Report> {
+        let [high, low] = if self.cid == 0 { TOP_HOLD } else { self.cid }.to_be_bytes();
         let payload = match request.function() {
-            0 => vec![1],
-            1 => vec![0, 0xd8, 0, 0xb7, 0x34, 0, 0, 0, 1],
+            0 => vec![2],
+            1 => {
+                // Position 0 is an unrelated control; the target is at position 1.
+                if request.payload()[0] == 0 {
+                    vec![0, 0x50, 0, 0x38, 0x34, 0, 0, 0, 0]
+                } else {
+                    vec![high, low, 0, 0xb7, 0x34, 0, 0, 0, 1]
+                }
+            }
             2 => {
                 let flags = if self.corrupt_readback && self.flags & 1 != 0 {
                     self.flags | 0x10
@@ -28,8 +41,8 @@ impl Device {
                     self.flags
                 };
                 vec![
-                    0,
-                    0xd8,
+                    high,
+                    low,
                     flags as u8,
                     (self.mapped >> 8) as u8,
                     self.mapped as u8,
@@ -39,7 +52,7 @@ impl Device {
             3 => {
                 self.writes.push(request.clone());
                 let p = request.payload();
-                assert_eq!(&p[..2], &[0, 0xd8]);
+                assert_eq!(&p[..2], &[high, low]);
                 assert_eq!(p[2] & !1, 2, "only DVALID may be set");
                 assert_eq!(&p[3..5], &[0, 0], "mapping must stay unchanged");
                 let enabling = p[2] & 1 != 0;
@@ -97,7 +110,7 @@ fn lost_enable_ack_still_restores_applied_configuration() {
         Ok(_) => panic!("lost acknowledgement must fail initialization"),
         Err(e) => e.to_string(),
     };
-    assert!(error.contains("original top setting restored and verified"));
+    assert!(error.contains("original setting of control 00d8 restored and verified"));
     assert_eq!(device.flags, 0);
     assert_eq!(device.writes.len(), 2);
 }
@@ -280,4 +293,182 @@ fn emergency_hide_latches_until_release_and_disconnect_preserves_manual_mode() {
         state.active(103.0),
         "release/disconnect must not cancel a manual activation"
     );
+}
+
+#[test]
+fn other_divertible_controls_use_their_own_cid_and_restore() {
+    for cid in [SWITCH_HIGHLIGHT, NEXT_HOLD] {
+        let mut device = Device {
+            cid,
+            empty_ack: true,
+            ..Default::default()
+        };
+        let lease = TemporaryTopButton::start_control(|r| device.exchange(r), 1, 7, cid).unwrap();
+        assert_eq!(lease.control(), cid);
+        assert_eq!(lease.original().mapped_to, cid);
+        lease.finish().unwrap();
+        assert_eq!(device.flags, 0);
+        assert_eq!(device.writes.len(), 2);
+        // A device that only exposes 0x00df must not be treated as having 0x00d8.
+        let mut other = Device {
+            cid,
+            ..Default::default()
+        };
+        assert!(TemporaryTopButton::start(|r| other.exchange(r), 1, 7).is_err());
+        assert!(other.writes.is_empty());
+    }
+}
+
+#[test]
+fn notifications_report_every_held_control() {
+    let mut bytes = [0; 20];
+    bytes[..8].copy_from_slice(&[0x11, 0xff, 7, 0, 0x00, 0xd8, 0x00, 0xda]);
+    let report = Report::parse(&bytes).unwrap();
+    assert_eq!(
+        active_controls(&report, 0xff, 7),
+        Some(vec![TOP_HOLD, NEXT_HOLD])
+    );
+    assert_eq!(top_button_state(&report, 0xff, 7), Some(true));
+    bytes[4..8].fill(0);
+    assert_eq!(
+        active_controls(&Report::parse(&bytes).unwrap(), 0xff, 7),
+        Some(vec![])
+    );
+    bytes[3] = 0x10; // event 1 is raw motion, not button state
+    assert_eq!(
+        active_controls(&Report::parse(&bytes).unwrap(), 0xff, 7),
+        None
+    );
+}
+
+#[test]
+fn recorded_bluetooth_gestures_decode_to_each_diverted_control() {
+    // docs/qa/bluetooth-gesture-controls.hex: first-generation Spotlight,
+    // Bluetooth, macOS 27, with 00d8/00df/00da/00dc temporarily diverted.
+    // Sequence: double click, next hold, back hold, top hold (press/release each).
+    let frames: Vec<_> = include_str!("../docs/qa/bluetooth-gesture-controls.hex")
+        .lines()
+        .map(|line| {
+            let bytes: Vec<_> = line
+                .split_whitespace()
+                .map(|s| u8::from_str_radix(s, 16).unwrap())
+                .collect();
+            Report::parse(&bytes).unwrap()
+        })
+        .collect();
+    let decoded: Vec<_> = frames
+        .iter()
+        .map(|f| active_controls(f, notification_address(true, 1), 7).unwrap())
+        .collect();
+    let expected: Vec<Vec<u16>> = vec![
+        vec![SWITCH_HIGHLIGHT],
+        vec![],
+        vec![NEXT_HOLD],
+        vec![],
+        vec![BACK_HOLD],
+        vec![],
+        vec![TOP_HOLD],
+        vec![],
+    ];
+    assert_eq!(decoded, expected);
+}
+
+#[test]
+fn only_this_process_leftover_diversion_is_adopted_after_failed_restore() {
+    let previous = Reporting {
+        flags: 0,
+        mapped_to: TOP_HOLD,
+    };
+    // Exactly our leftover: adopted without writing, restored on finish.
+    let mut device = Device {
+        flags: 1,
+        empty_ack: true,
+        ..Default::default()
+    };
+    let lease =
+        TemporaryTopButton::start_or_adopt(|r| device.exchange(r), 1, 7, TOP_HOLD, Some(previous))
+            .unwrap();
+    lease.finish().unwrap();
+    assert_eq!(
+        device.writes.len(),
+        1,
+        "adoption writes nothing; only restore"
+    );
+    assert_eq!(device.flags, 0);
+    // Without a recorded leftover, or with any other state, nothing is touched.
+    for (flags, mapped, leftover) in [
+        (1, 0, None),
+        (0x11, 0, Some(previous)),
+        (1, 0xdf, Some(previous)),
+    ] {
+        let mut device = Device {
+            flags,
+            mapped,
+            ..Default::default()
+        };
+        assert!(TemporaryTopButton::start_or_adopt(
+            |r| device.exchange(r),
+            1,
+            7,
+            TOP_HOLD,
+            leftover
+        )
+        .is_err());
+        assert!(device.writes.is_empty());
+        assert_eq!(device.flags, flags);
+    }
+    // A clean device is configured normally even if a leftover was recorded.
+    let mut device = Device::default();
+    TemporaryTopButton::start_or_adopt(|r| device.exchange(r), 1, 7, TOP_HOLD, Some(previous))
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(device.writes.len(), 2);
+}
+
+#[test]
+fn leftover_records_survive_a_restart_and_reject_garbage() {
+    let items = vec![
+        (
+            TOP_HOLD,
+            Reporting {
+                flags: 0,
+                mapped_to: TOP_HOLD,
+            },
+        ),
+        (
+            NEXT_HOLD,
+            Reporting {
+                flags: 0x0200,
+                mapped_to: NEXT_HOLD,
+            },
+        ),
+    ];
+    assert_eq!(parse_unrestored(&format_unrestored(&items)), items);
+    assert!(parse_unrestored("zz 0 0\n00d8 0000\n00d8 0 0 extra\n").is_empty());
+}
+
+#[test]
+fn explicit_recovery_applies_to_each_gesture_control() {
+    for cid in [SWITCH_HIGHLIGHT, NEXT_HOLD, BACK_HOLD] {
+        let mut device = Device {
+            cid,
+            flags: 1,
+            empty_ack: true,
+            ..Default::default()
+        };
+        TemporaryTopButton::recover_default_control(|r| device.exchange(r), 1, 7, cid).unwrap();
+        assert_eq!(device.flags, 0);
+        let mut remapped = Device {
+            cid,
+            flags: 1,
+            mapped: TOP_HOLD,
+            ..Default::default()
+        };
+        assert!(
+            TemporaryTopButton::recover_default_control(|r| remapped.exchange(r), 1, 7, cid)
+                .is_err()
+        );
+        assert!(remapped.writes.is_empty());
+    }
 }

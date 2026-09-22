@@ -1,0 +1,25 @@
+DIVERTED 00d8 top-hold original_flags=0000 original_mapping=00d8
+DIVERTED 00df double-click original_flags=0000 original_mapping=00df
+DIVERTED 00da next-hold original_flags=0000 original_mapping=00da
+DIVERTED 00dc back-hold original_flags=0000 original_mapping=00dc
+READY notifications=ff feature=07. For 180s: double-click top, hold next, hold back, short-press next/back, hold top. Ctrl-C ends early.
+   32684ms PRESS   00df double-click
+   32743ms RELEASE 00df double-click
+   35459ms PRESS   00da next-hold
+   37679ms RELEASE 00da next-hold
+   40439ms PRESS   00dc back-hold
+   42239ms RELEASE 00dc back-hold
+   46123ms KEYBOARD RightArrow
+   46183ms KEYBOARD released
+   47293ms KEYBOARD LeftArrow
+   47354ms KEYBOARD released
+   52063ms MOUSE buttons=0100
+   52123ms MOUSE buttons=0000
+   55439ms PRESS   00d8 top-hold
+   65536ms RELEASE 00d8 top-hold
+Captured 225 reports (213 mouse); signal=0. Restoring controls.
+RESTORED and verified 00dc
+RESTORED and verified 00da
+RESTORED and verified 00df
+RESTORED and verified 00d8
+exit=0
