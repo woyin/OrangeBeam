@@ -1,0 +1,3 @@
+READY top-hold notifications enabled; index=1 feature=07 original_flags=0000 original_mapping=00d8. Hold/move/keep still/release the top button within 300s.
+Captured 878 reports; signal=15. Restoring top setting.
+RESTORED and verified top flags=0000 mapped_to=00d8

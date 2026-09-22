@@ -1,0 +1,39 @@
+{
+  "model": "Spotlight first generation 046d:b503",
+  "transport": "Bluetooth",
+  "usage": "ff43:0202",
+  "os": "macOS 27.0 26A428 ARM64",
+  "date": "2026-09-22",
+  "note": "Configuration/cleanup tests only. No user button actions requested. Capture logs in signal cases include diagnostic query replies.",
+  "before": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+  "cases": [
+    {
+      "case": "normal timeout",
+      "exit_code": 0,
+      "status": "READY top-hold notifications enabled; index=1 feature=07 original_flags=0000 original_mapping=00d8. Hold/move/keep still/release the top button within 2s.\nCaptured 0 reports; signal=0. Restoring top setting.\nRESTORED and verified top flags=0000 mapped_to=00d8\n",
+      "reports": "",
+      "after": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n"
+    },
+    {
+      "case": "SIGTERM",
+      "exit_code": 0,
+      "status": "READY top-hold notifications enabled; index=1 feature=07 original_flags=0000 original_mapping=00d8. Hold/move/keep still/release the top button within 30s.\nCaptured 18 reports; signal=15. Restoring top setting.\nRESTORED and verified top flags=0000 mapped_to=00d8\n",
+      "during": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0001 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+      "after": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n"
+    },
+    {
+      "case": "SIGINT",
+      "exit_code": 0,
+      "status": "READY top-hold notifications enabled; index=1 feature=07 original_flags=0000 original_mapping=00d8. Hold/move/keep still/release the top button within 30s.\nCaptured 18 reports; signal=2. Restoring top setting.\nRESTORED and verified top flags=0000 mapped_to=00d8\n",
+      "during": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0001 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+      "after": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n"
+    },
+    {
+      "case": "SIGHUP",
+      "exit_code": 0,
+      "status": "READY top-hold notifications enabled; index=1 feature=07 original_flags=0000 original_mapping=00d8. Hold/move/keep still/release the top button within 30s.\nCaptured 18 reports; signal=1. Restoring top setting.\nRESTORED and verified top flags=0000 mapped_to=00d8\n",
+      "during": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0001 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+      "after": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n"
+    }
+  ]
+}

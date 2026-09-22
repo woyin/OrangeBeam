@@ -1,0 +1,11 @@
+{
+  "case": "GUI automatic Bluetooth connection and SIGTERM cleanup",
+  "date": "2026-09-22",
+  "os": "macOS 27.0 26A428 ARM64",
+  "before": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+  "during": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0001 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+  "after": "BATTERY_STATUS current=100 next=75 status=0x00\nREPROG_CONTROLS_V4 controls=7\ncontrol=0 cid=0050 task=0038 capabilities=0034 reporting=0000 mapped_to=0050\ncontrol=1 cid=00d8 task=00b7 capabilities=0134 reporting=0000 mapped_to=00d8\ncontrol=2 cid=00df task=00be capabilities=0034 reporting=0000 mapped_to=00df\ncontrol=3 cid=00d9 task=00b6 capabilities=0034 reporting=0000 mapped_to=00d9\ncontrol=4 cid=00da task=00bc capabilities=0134 reporting=0000 mapped_to=00da\ncontrol=5 cid=00db task=00b8 capabilities=0034 reporting=0000 mapped_to=00db\ncontrol=6 cid=00dc task=00bd capabilities=0134 reporting=0000 mapped_to=00dc\n",
+  "exit_code": 0,
+  "log": "REMOTE READY transport=Bluetooth query=01 notifications=ff feature=07\nREMOTE RESTORED and verified top configuration\n",
+  "note": "No user button action requested in this check; it validates session configuration and GUI termination, not overlay activation."
+}

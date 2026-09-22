@@ -1,0 +1,14 @@
+Protocol research references Projecteur (MIT):
+https://github.com/gbin/Projecteur
+Revision: 5a174f6790f82abda3360916940b66060cc2358b
+Copyright (c) 2018–2021 Jahn Fuchs
+Current development copyright (c) 2026 Guillaume Binet and Projecteur contributors
+
+This prototype independently implements a small wire-format and query subset in Rust.
+It does not bundle Projecteur, Qt, Logitech software, firmware or graphical assets.
+Runtime/build dependencies retain their own licenses; see Cargo.lock and their packages.
+
+Native bindings: objc2 / block2 / dispatch2 and Apple framework crates.
+https://github.com/madsmtm/objc2
+Class declaration and ownership patterns follow the upstream binding examples.
+Dependency versions and upstream notices are included in THIRD-PARTY-LICENSES.txt.

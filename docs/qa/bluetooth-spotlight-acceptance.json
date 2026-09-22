@@ -1,0 +1,22 @@
+{
+  "date": "2026-09-22",
+  "model": "Logitech Spotlight first generation 046d:b503",
+  "transport": "Bluetooth",
+  "os": "macOS 27.0 26A428 ARM64",
+  "effect": "Spotlight",
+  "action": "Hold top button and move for about 3 seconds; continue holding still for about 3 seconds; release.",
+  "user_confirmation": "三项都正常",
+  "accepted": [
+    "Pointer follows movement",
+    "Effect remains visible while button held stationary",
+    "Effect disappears on release"
+  ],
+  "application_evidence": [
+    "REMOTE TOP pressed overlay_windows_visible=1",
+    "REMOTE TOP released overlay_windows_visible=0"
+  ],
+  "limitations": [
+    "Other earlier log entries occurred in magnification mode without frames; excluded from this acceptance.",
+    "USB, full-screen, multi-display, screen sharing, physical disconnect/sleep, and real-time magnification remain unverified."
+  ]
+}
