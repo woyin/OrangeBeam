@@ -1,10 +1,10 @@
-use spotlight_rs::controls::{
+use orange_beam::controls::{
     active_controls, top_button_state, Reporting, Result, TemporaryTopButton, BACK_HOLD, NEXT_HOLD,
     SWITCH_HIGHLIGHT, TOP_HOLD,
 };
-use spotlight_rs::controls::{format_unrestored, notification_address, parse_unrestored};
-use spotlight_rs::presentation::Presentation;
-use spotlight_rs::Report;
+use orange_beam::controls::{format_unrestored, notification_address, parse_unrestored};
+use orange_beam::presentation::Presentation;
+use orange_beam::Report;
 
 // A simulated device applies writes before replying, as real hardware can do
 // when an acknowledgement is lost. These are synthetic, not captured packets.

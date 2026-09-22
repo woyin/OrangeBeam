@@ -2,11 +2,11 @@
 //! worker. Only semantic state changes reach the UI. macOS handles cursor motion.
 use hidapi::{BusType, DeviceInfo, HidApi};
 use objc2::MainThreadMarker;
-use spotlight_rs::controls::{
+use orange_beam::controls::{
     active_controls, notification_address, Reporting, TemporaryTopButton, BACK_HOLD, NEXT_HOLD,
     SWITCH_HIGHLIGHT, TOP_HOLD,
 };
-use spotlight_rs::{Report, SOFTWARE_ID};
+use orange_beam::{Report, SOFTWARE_ID};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,

@@ -1,4 +1,4 @@
-Third-party notices for spotlight-rs 0.2.0. Generated from Cargo.lock.
+Third-party notices for orange-beam 0.2.0. Generated from Cargo.lock.
 
 Supplementary objc2 project MIT text. Source: https://raw.githubusercontent.com/madsmtm/objc2/main/LICENSE-MIT.txt
 Copyright 2026 Mads Marquart

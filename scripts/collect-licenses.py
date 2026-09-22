@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 
 metadata = json.loads(Path(sys.argv[1]).read_text())
-packages = [p for p in metadata["packages"] if p["name"] != "spotlight-rs"]
+packages = [p for p in metadata["packages"] if p["name"] != "orange-beam"]
 local, missing, revisions = {}, {}, set()
 for package in packages:
     root = Path(package["manifest_path"]).parent
@@ -46,7 +46,7 @@ def fetch(key):
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
     remote = dict(pool.map(fetch, [(r, name) for r in sorted(revisions) for name in names]))
 
-parts = ["Third-party notices for spotlight-rs 0.2.0. Generated from Cargo.lock.\n"]
+parts = ["Third-party notices for orange-beam 0.2.0. Generated from Cargo.lock.\n"]
 # Older objc2 revisions published an SPDX declaration and license statement only.
 # Include the project's full MIT text as supplementary text, with its exact source.
 url = "https://raw.githubusercontent.com/madsmtm/objc2/main/LICENSE-MIT.txt"

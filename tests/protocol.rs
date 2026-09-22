@@ -1,4 +1,4 @@
-use spotlight_rs::*;
+use orange_beam::*;
 
 #[test]
 fn bluetooth_queries_are_long_zero_padded_and_big_endian() {

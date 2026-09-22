@@ -195,8 +195,8 @@ impl Delegate {
             (
                 NSSlider::sliderWithValue_minValue_maxValue_target_action(
                     settings.radius,
-                    spotlight_rs::presentation::MIN_RADIUS,
-                    spotlight_rs::presentation::MAX_RADIUS,
+                    orange_beam::presentation::MIN_RADIUS,
+                    orange_beam::presentation::MAX_RADIUS,
                     self.target(),
                     Some(sel!(radiusChanged:)),
                     mtm,
@@ -222,12 +222,12 @@ impl Delegate {
                 mtm,
             ),
         );
-        let zoom_titles: Vec<String> = spotlight_rs::settings::ZOOM_LEVELS
+        let zoom_titles: Vec<String> = orange_beam::settings::ZOOM_LEVELS
             .iter()
             .map(|z| format!("{z}×"))
             .collect();
         let zoom_refs: Vec<&str> = zoom_titles.iter().map(String::as_str).collect();
-        let zoom_index = spotlight_rs::settings::ZOOM_LEVELS
+        let zoom_index = orange_beam::settings::ZOOM_LEVELS
             .iter()
             .position(|z| *z == settings.zoom)
             .unwrap_or(1);
@@ -401,7 +401,7 @@ impl Delegate {
             window.setReleasedWhenClosed(false);
             window
         };
-        window.setTitle(ns_string!("Spotlight RS"));
+        window.setTitle(&NSString::from_str(app_name()));
         let fitting = root.fittingSize();
         window.setContentView(Some(&root));
         window.setContentSize(fitting);
@@ -557,7 +557,7 @@ impl Delegate {
         if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
             NSWorkspace::sharedWorkspace().openURL(&url);
         }
-        self.set_message("授权后如状态未更新，请重新打开 Spotlight RS。");
+        self.set_message(&format!("授权后如状态未更新，请重新打开{}。", app_name()));
         self.refresh_panel(true);
     }
 }

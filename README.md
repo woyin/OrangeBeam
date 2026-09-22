@@ -1,4 +1,6 @@
-# Spotlight RS
+# Orange Beam（橙现）
+
+原名 Spotlight RS。
 
 用 Rust 实现的 macOS 原生演示效果工具，目标是为第一代 Logitech Spotlight 提供轻量开源替代。
 
@@ -21,7 +23,7 @@
 
 ## 直接试用
 
-解压 `Spotlight-RS-macos-arm64.zip`，打开 `Spotlight RS.app`。本次产物用于本地测试，采用 ad-hoc 签名，尚未做 Developer ID 签名和公证。
+解压 `Orange-Beam-macos-arm64.zip`，打开 `Orange Beam.app`（中文系统中显示为“橙现”）。本次产物用于本地测试，采用 ad-hoc 签名，尚未做 Developer ID 签名和公证。
 
 1. 蓝牙或 USB 连接第一代 Spotlight，打开应用；控制面板应显示连接状态。若连接失败，处理提示后点击“连接遥控器”。
 2. 菜单栏 `◎` 选择聚光或数字激光，按住顶键并移动遥控器；保持静止不会隐藏，松开后结束。前后键继续由 macOS 处理。
@@ -48,7 +50,7 @@ cargo run -- app
 sh scripts/bundle.sh
 ```
 
-应用生成到 `dist/Spotlight RS.app`。可以给打包脚本传入输出目录。`Cargo.lock` 固定依赖版本；许可证和第三方声明随包携带。更新依赖后，用 `cargo metadata` 与 `scripts/collect-licenses.py` 更新第三方声明（仅此维护脚本需要 Python 3 和联网）。
+应用生成到 `dist/Orange Beam.app`。可以给打包脚本传入输出目录。`Cargo.lock` 固定依赖版本；许可证和第三方声明随包携带。更新依赖后，用 `cargo metadata` 与 `scripts/collect-licenses.py` 更新第三方声明（仅此维护脚本需要 Python 3 和联网）。
 
 ## 无设备检查
 

@@ -3,12 +3,12 @@ use hidapi::{DeviceInfo, HidApi, HidDevice};
 mod macos;
 #[cfg(unix)]
 mod stop_signals;
-use spotlight_rs::controls::{
+use orange_beam::controls::{
     active_controls, notification_address, top_button_state, TemporaryTopButton, BACK_HOLD,
     NEXT_HOLD, SWITCH_HIGHLIGHT, TOP_HOLD,
 };
-use spotlight_rs::presentation::Effect;
-use spotlight_rs::{
+use orange_beam::presentation::Effect;
+use orange_beam::{
     feature_index, feature_request, is_spotlight, Report, ResponseKind, SOFTWARE_ID,
 };
 use std::{
@@ -18,21 +18,21 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const HELP: &str = "spotlight-rs — native macOS Spotlight companion
+const HELP: &str = "orange-beam — Orange Beam (橙现), a macOS companion for the Logitech Spotlight
 
 USAGE:
-  spotlight-rs app
-  spotlight-rs demo [spotlight|laser] [SECONDS]
-  spotlight-rs render-fixtures DIRECTORY
-  spotlight-rs list
-  spotlight-rs probe DEVICE [INDEX]
-  spotlight-rs inspect DEVICE [INDEX]
-  spotlight-rs capture DEVICE [SECONDS]
-  spotlight-rs watch-top DEVICE [SECONDS] [INDEX]
-  spotlight-rs watch-controls DEVICE [SECONDS] [INDEX]
-  spotlight-rs vibrate DEVICE [INTENSITY] [LENGTH] [INDEX]
-  spotlight-rs recover-top-default DEVICE [INDEX]
-  spotlight-rs recover-controls-default DEVICE [INDEX]
+  orange-beam app
+  orange-beam demo [spotlight|laser] [SECONDS]
+  orange-beam render-fixtures DIRECTORY
+  orange-beam list
+  orange-beam probe DEVICE [INDEX]
+  orange-beam inspect DEVICE [INDEX]
+  orange-beam capture DEVICE [SECONDS]
+  orange-beam watch-top DEVICE [SECONDS] [INDEX]
+  orange-beam watch-controls DEVICE [SECONDS] [INDEX]
+  orange-beam vibrate DEVICE [INTENSITY] [LENGTH] [INDEX]
+  orange-beam recover-top-default DEVICE [INDEX]
+  orange-beam recover-controls-default DEVICE [INDEX]
 
 DEVICE is an interface number from 'list', not a receiver slot.
 INDEX is the HID++ receiver slot (default 1, allowed 1..6).
@@ -230,7 +230,7 @@ fn parse_args(args: &[String]) -> Result<Command> {
                 Ok(Command::Capture { device, seconds })
             }
         }
-        _ => Err("Invalid arguments. Run spotlight-rs --help".into()),
+        _ => Err("Invalid arguments. Run orange-beam --help".into()),
     }
 }
 
@@ -811,7 +811,7 @@ fn run() -> Result<()> {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("spotlight-rs: {error}");
+        eprintln!("orange-beam: {error}");
         std::process::exit(1);
     }
 }

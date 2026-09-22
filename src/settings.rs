@@ -258,6 +258,19 @@ impl Settings {
     }
 }
 
+/// Moves the support directory left by a previous product name, once.
+/// Never overwrites an existing new directory; returns whether it moved.
+pub fn migrate_dir(old: &std::path::Path, new: &std::path::Path) -> std::io::Result<bool> {
+    if new.exists() || !old.is_dir() {
+        return Ok(false);
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(old, new)?;
+    Ok(true)
+}
+
 /// Elapsed-time timer; each configured minute mark fires once per run.
 #[derive(Debug, Default)]
 pub struct PresentationTimer {
@@ -368,6 +381,33 @@ mod tests {
         s.cycle = [true, false, false, true];
         assert_eq!(s.next_effect(Effect::Spotlight, false), Some(Effect::Box));
         assert_eq!(s.next_effect(Effect::Box, false), Some(Effect::Spotlight));
+    }
+
+    #[test]
+    fn previous_settings_directory_moves_once_without_overwriting() {
+        let base = std::env::temp_dir().join(format!(
+            "orange-beam-migrate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let old = base.join("Spotlight RS");
+        let new = base.join("Orange Beam");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.conf"), "radius=200\n").unwrap();
+        assert!(migrate_dir(&old, &new).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(new.join("settings.conf")).unwrap(),
+            "radius=200\n"
+        );
+        assert!(!old.exists());
+        // A later leftover old directory never replaces current settings.
+        std::fs::create_dir_all(&old).unwrap();
+        assert!(!migrate_dir(&old, &new).unwrap());
+        assert!(old.exists());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

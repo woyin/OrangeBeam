@@ -16,12 +16,12 @@ use objc2_core_graphics::{
     CGRequestPostEventAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_foundation::*;
-use panel::{Panel, RemoteStatus};
-use spotlight_rs::controls::{format_unrestored, parse_unrestored, Reporting};
-use spotlight_rs::presentation::{BoxView, Effect, Point, Presentation, Rect};
-use spotlight_rs::settings::{
+use orange_beam::controls::{format_unrestored, parse_unrestored, Reporting};
+use orange_beam::presentation::{BoxView, Effect, Point, Presentation, Rect};
+use orange_beam::settings::{
     parse_minutes, HoldAction, PresentationTimer, ScreenReminder, Settings, EFFECTS,
 };
+use panel::{Panel, RemoteStatus};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Instant;
@@ -38,6 +38,19 @@ struct ViewData {
     black: Cell<bool>,
     /// Box effect content in view coordinates.
     box_draw: Cell<BoxDraw>,
+}
+
+/// Localized product name: 橙现 when the preferred language is Chinese,
+/// Orange Beam otherwise (Finder uses the bundle's InfoPlist.strings).
+fn app_name() -> &'static str {
+    let chinese = NSLocale::preferredLanguages()
+        .firstObject()
+        .is_some_and(|language| language.to_string().starts_with("zh"));
+    if chinese {
+        "橙现"
+    } else {
+        "Orange Beam"
+    }
 }
 
 /// How long a double-click switch shows the newly selected effect.
@@ -217,7 +230,7 @@ impl Overlay {
                     | NSWindowCollectionBehavior::IgnoresCycle,
             );
             panel.setAnimationBehavior(NSWindowAnimationBehavior::None);
-            panel.setTitle(ns_string!("Spotlight RS Overlay"));
+            panel.setTitle(ns_string!("Orange Beam Overlay"));
             let view = OverlayView::alloc(mtm).set_ivars(ViewData::default());
             let view: Retained<OverlayView> =
                 msg_send![super(view), initWithFrame: NSRect::new(NSPoint::ZERO, frame.size)];
@@ -452,7 +465,7 @@ define_class!(
         }
         #[unsafe(method(radiusChanged:))]
         fn radius_changed(&self, sender: &NSSlider) {
-            let radius = spotlight_rs::presentation::clamp_radius(sender.doubleValue());
+            let radius = orange_beam::presentation::clamp_radius(sender.doubleValue());
             self.ivars().presentation.borrow_mut().radius = radius;
             self.ivars().settings.borrow_mut().radius = radius;
             self.save_settings();
@@ -460,7 +473,7 @@ define_class!(
         }
         #[unsafe(method(shadeChanged:))]
         fn shade_changed(&self, sender: &NSSlider) {
-            let shade = spotlight_rs::settings::clamp_shade(sender.doubleValue());
+            let shade = orange_beam::settings::clamp_shade(sender.doubleValue());
             self.ivars().presentation.borrow_mut().shade = shade;
             self.ivars().settings.borrow_mut().shade = shade;
             self.save_settings();
@@ -468,7 +481,7 @@ define_class!(
         }
         #[unsafe(method(zoomChanged:))]
         fn zoom_changed(&self, sender: &NSPopUpButton) {
-            let levels = spotlight_rs::settings::ZOOM_LEVELS;
+            let levels = orange_beam::settings::ZOOM_LEVELS;
             let zoom = levels[sender.indexOfSelectedItem().clamp(0, levels.len() as isize - 1) as usize];
             self.ivars().presentation.borrow_mut().zoom = zoom;
             self.ivars().settings.borrow_mut().zoom = zoom;
@@ -725,11 +738,29 @@ impl Delegate {
     fn now(&self) -> f64 {
         self.ivars().start.elapsed().as_secs_f64()
     }
-    fn settings_path() -> Option<std::path::PathBuf> {
+    fn support_dir(product: &str) -> Option<std::path::PathBuf> {
         std::env::var_os("HOME").map(|home| {
             std::path::PathBuf::from(home)
-                .join("Library/Application Support/Spotlight RS/settings.conf")
+                .join("Library/Application Support")
+                .join(product)
         })
+    }
+    fn settings_path() -> Option<std::path::PathBuf> {
+        Self::support_dir("Orange Beam").map(|dir| dir.join("settings.conf"))
+    }
+    /// Carry settings and leftover records over from the former name.
+    fn migrate_support_dir() {
+        let (Some(old), Some(new)) = (
+            Self::support_dir("Spotlight RS"),
+            Self::support_dir("Orange Beam"),
+        ) else {
+            return;
+        };
+        match orange_beam::settings::migrate_dir(&old, &new) {
+            Ok(true) => eprintln!("SETTINGS migrated from {}", old.display()),
+            Ok(false) => {}
+            Err(error) => eprintln!("SETTINGS migration failed: {error}"),
+        }
     }
     fn unrestored_path() -> Option<std::path::PathBuf> {
         Self::settings_path().map(|path| path.with_file_name("diverted-controls.txt"))
@@ -895,7 +926,7 @@ impl Delegate {
         if CGPreflightPostEventAccess() || CGRequestPostEventAccess() {
             return true;
         }
-        self.set_message("长按翻页键发送快捷键需要“辅助功能”权限：系统设置 → 隐私与安全性 → 辅助功能，允许 Spotlight RS 后重新打开程序。");
+        self.set_message(&format!("长按翻页键发送快捷键需要“辅助功能”权限：系统设置 → 隐私与安全性 → 辅助功能，允许{}后重新打开程序。", app_name()));
         false
     }
     fn perform_hold(&self, action: HoldAction) {
@@ -1074,7 +1105,7 @@ impl Delegate {
         if allowed {
             return true;
         }
-        self.set_message("请在系统设置 → 隐私与安全性 → 屏幕录制中允许 Spotlight RS，然后重新打开程序。聚光与激光无需此权限。");
+        self.set_message(&format!("请在系统设置 → 隐私与安全性 → 屏幕录制中允许{}，然后重新打开程序。聚光与激光无需此权限。", app_name()));
         self.show_controls();
         false
     }
@@ -1135,12 +1166,12 @@ impl Delegate {
         let remote = self.item(&menu, "连接遥控器", sel!(toggleRemote:), "");
         self.ivars().remote_item.replace(Some(remote));
         self.item(&menu, "打开控制面板…", sel!(showControls:), "");
-        self.item(&menu, "退出 Spotlight RS", sel!(quit:), "q");
+        self.item(&menu, &format!("退出{}", app_name()), sel!(quit:), "q");
         let status =
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = status.button(self.mtm()) {
             button.setTitle(ns_string!("◎"));
-            button.setToolTip(Some(ns_string!("Spotlight RS")));
+            button.setToolTip(Some(&NSString::from_str(app_name())));
         }
         status.setMenu(Some(&menu));
         self.ivars().status.replace(Some(status));
@@ -1316,6 +1347,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
     let mtm = MainThreadMarker::new().ok_or("AppKit must start on the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    Delegate::migrate_support_dir();
     let settings = Delegate::load_settings();
     let delegate = Delegate::alloc(mtm).set_ivars(AppData {
         start: Instant::now(),
