@@ -52,6 +52,15 @@ sh scripts/bundle.sh
 
 应用生成到 `dist/Orange Beam.app`。可以给打包脚本传入输出目录。`Cargo.lock` 固定依赖版本；许可证和第三方声明随包携带。更新依赖后，用 `cargo metadata` 与 `scripts/collect-licenses.py` 更新第三方声明（仅此维护脚本需要 Python 3 和联网）。
 
+## 自动构建
+
+每次推送到 `main` 或提交 Pull Request，GitHub Actions（`.github/workflows/build.yml`）会自动构建，产物在对应运行的 Artifacts 中下载：
+
+- `Orange-Beam-macos-arm64.zip`：完整应用，macOS Apple Silicon；先经过格式、Clippy、测试和离屏绘制检查。ad-hoc 签名，未公证。
+- `orange-beam-cli-linux-x86_64.tar.gz`、`orange-beam-cli-windows-x86_64.zip`：仅命令行诊断工具（`list`、`probe`、`inspect`、`capture`、`watch-controls`、`vibrate` 等）。图形界面依赖 AppKit，只有 macOS 版本。
+
+推送 `v*` 标签（如 `v0.3.0`）时，全部构建成功后会自动创建 GitHub Release 并附上这些文件。
+
 ## 无设备检查
 
 ```sh
