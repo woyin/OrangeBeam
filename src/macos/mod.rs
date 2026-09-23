@@ -581,13 +581,13 @@ struct AppData {
     // Keep a main-thread owner until after the worker joins. MainThreadBound's
     // final drop must never synchronously dispatch to a main thread joining it.
     remote_target: RefCell<Option<Arc<MainThreadBound<Retained<Delegate>>>>>,
-    remote_item: RefCell<Option<Retained<NSMenuItem>>>,
+    status_menu_item: RefCell<Option<Retained<NSMenuItem>>>,
+    effect_menu_item: RefCell<Option<Retained<NSMenuItem>>>,
     signals: crate::stop_signals::StopSignals,
     closing: Cell<bool>,
     settings: RefCell<Settings>,
     talk_timer: RefCell<PresentationTimer>,
     timer_item: RefCell<Option<Retained<NSMenuItem>>>,
-    auto_reconnect: Cell<bool>,
     retry_at: Cell<f64>,
     panel: RefCell<Option<Panel>>,
     remote_status: Cell<RemoteStatus>,
@@ -663,22 +663,6 @@ define_class!(
             }
             self.frame();
         }
-        #[unsafe(method(toggle:))]
-        fn toggle(&self, _sender: Option<&AnyObject>) {
-            self.ivars().presentation.borrow_mut().toggle(self.now());
-            self.tick();
-        }
-        #[unsafe(method(preview:))]
-        fn preview(&self, _sender: Option<&AnyObject>) {
-            self.ivars().presentation.borrow_mut().preview(self.now(), 10.0);
-            self.tick();
-        }
-        #[unsafe(method(hide:))]
-        fn hide(&self, _sender: Option<&AnyObject>) {
-            self.ivars().presentation.borrow_mut().hide();
-            self.tick();
-            self.set_message("效果已隐藏。");
-        }
         #[unsafe(method(selectEffect:))]
         fn select_effect(&self, sender: &NSMenuItem) {
             let effect = match sender.tag() { 1 => Effect::Laser, 2 => Effect::Magnify, 3 => Effect::Box, _ => Effect::Spotlight };
@@ -720,10 +704,6 @@ define_class!(
         }
         #[unsafe(method(openPrivacy:))]
         fn open_privacy_action(&self, sender: &NSButton) { self.open_privacy(sender.tag().max(0) as usize); }
-        #[unsafe(method(smaller:))]
-        fn smaller(&self, _sender: Option<&AnyObject>) { self.resize_effect(0.8); }
-        #[unsafe(method(larger:))]
-        fn larger(&self, _sender: Option<&AnyObject>) { self.resize_effect(1.25); }
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: Option<&AnyObject>) { NSApplication::sharedApplication(self.mtm()).terminate(None); }
         #[unsafe(method(cycleChanged:))]
@@ -758,27 +738,6 @@ define_class!(
         }
         #[unsafe(method(toggleTimer:))]
         fn toggle_timer(&self, _sender: Option<&AnyObject>) { self.toggle_talk_timer(); }
-        #[unsafe(method(toggleBlackout:))]
-        fn toggle_blackout(&self, _sender: Option<&AnyObject>) {
-            let mut state = self.ivars().presentation.borrow_mut();
-            state.blackout = !state.blackout;
-            drop(state);
-            self.tick();
-        }
-        #[unsafe(method(toggleRemote:))]
-        fn toggle_remote(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().remote.borrow().is_some() {
-                // A deliberate disconnect also stops automatic reconnection.
-                self.ivars().auto_reconnect.set(false);
-                let _ = self.stop_remote(); // errors are logged inside
-                self.set_remote_status(RemoteStatus::Disconnected);
-                self.set_message("遥控器已断开，不会自动重连。点击“连接遥控器”可重新使用。");
-            } else {
-                self.ivars().auto_reconnect.set(true);
-                self.start_remote();
-            }
-            self.tick();
-        }
     }
 );
 
@@ -811,26 +770,22 @@ impl Delegate {
             Err(error) => {
                 self.ivars().remote_target.replace(None);
                 self.schedule_reconnect(3.0);
-                if self.ivars().auto_reconnect.get() {
-                    // Keep "reconnecting" wording after a drop; otherwise waiting.
-                    if self.ivars().remote_status.get() != RemoteStatus::Reconnecting {
-                        self.set_remote_status(RemoteStatus::Waiting);
-                    }
-                    self.set_message(&error.to_string());
-                } else {
-                    self.set_remote_status(RemoteStatus::Disconnected);
-                    self.set_message(&format!("无法连接遥控器：{error}"));
+                // Keep "reconnecting" wording after a drop; otherwise waiting.
+                if self.ivars().remote_status.get() != RemoteStatus::Reconnecting {
+                    self.set_remote_status(RemoteStatus::Waiting);
                 }
+                self.set_message(&error.to_string());
             }
         }
     }
     fn schedule_reconnect(&self, delay: f64) {
         self.ivars().retry_at.set(self.now() + delay);
     }
-    /// Called from tick: reconnect after a disconnect, sleep or failed start.
+    /// Called from tick: connect at launch and after a disconnect, sleep or
+    /// failed start. Bluetooth/USB pairing itself is left to macOS; quitting
+    /// the app is how to release the remote.
     fn maybe_reconnect(&self) {
-        if self.ivars().auto_reconnect.get()
-            && !self.ivars().closing.get()
+        if !self.ivars().closing.get()
             && self.ivars().initial_demo.is_none()
             && self.ivars().remote.borrow().is_none()
             && self.now() >= self.ivars().retry_at.get()
@@ -949,17 +904,10 @@ impl Delegate {
                 // Final notification is queued after restoration. Joining also
                 // completes destruction of the worker's main-bound callback.
                 let result = self.stop_remote();
-                if self.ivars().auto_reconnect.get() {
-                    self.schedule_reconnect(2.0);
-                    self.set_remote_status(RemoteStatus::Reconnecting);
-                    if result.is_err() {
-                        self.set_message("遥控器可能已休眠或超出范围；唤醒后会自动连上。");
-                    }
-                } else {
-                    self.set_remote_status(RemoteStatus::Disconnected);
-                    if let Err(error) = result {
-                        self.set_message(&format!("遥控器已停止：{error}"));
-                    }
+                self.schedule_reconnect(2.0);
+                self.set_remote_status(RemoteStatus::Reconnecting);
+                if result.is_err() {
+                    self.set_message("遥控器可能已休眠或超出范围；唤醒后会自动连上。");
                 }
                 self.tick();
             }
@@ -1039,20 +987,6 @@ impl Delegate {
         if let Err(error) = result {
             self.set_message(&format!("设置未能保存：{error}"));
         }
-    }
-    fn resize_effect(&self, factor: f64) {
-        let radius = {
-            let mut state = self.ivars().presentation.borrow_mut();
-            state.resize(factor);
-            state.radius
-        };
-        self.ivars().settings.borrow_mut().radius = radius;
-        self.save_settings();
-        if let Some(panel) = self.ivars().panel.borrow().as_ref() {
-            panel.radius.setDoubleValue(radius);
-        }
-        self.set_message(&format!("聚光直径：{} 点", (radius * 2.0).round()));
-        self.tick();
     }
     fn effect_name(effect: Effect) -> &'static str {
         match effect {
@@ -1265,22 +1199,21 @@ impl Delegate {
     }
     fn update_timer_ui(&self) {
         let elapsed = self.ivars().talk_timer.borrow().elapsed(self.now());
-        let title = NSString::from_str(if elapsed.is_some() {
-            "停止计时"
-        } else {
-            "开始计时"
+        let clock = elapsed.map(|seconds| {
+            let seconds = seconds as u64;
+            format!("{:02}:{:02}", seconds / 60, seconds % 60)
         });
         self.refresh_panel(false);
         if let Some(item) = self.ivars().timer_item.borrow().as_ref() {
-            item.setTitle(&title);
-        }
-        let status = match elapsed {
-            Some(seconds) => {
-                let seconds = seconds as u64;
-                format!(" {:02}:{:02}", seconds / 60, seconds % 60)
+            let title = match &clock {
+                Some(clock) => format!("停止计时（{clock}）"),
+                None => "开始计时".to_string(),
+            };
+            if item.title().to_string() != title {
+                item.setTitle(&NSString::from_str(&title));
             }
-            None => String::new(),
-        };
+        }
+        let status = clock.map(|clock| format!(" {clock}")).unwrap_or_default();
         if let Some(item) = self.ivars().status.borrow().as_ref() {
             if let Some(button) = item.button(self.mtm()) {
                 if button.title().to_string() != status {
@@ -1371,32 +1304,40 @@ impl Delegate {
             item
         }
     }
+    /// Status at a glance plus the few things worth a click during a talk;
+    /// everything configurable lives in the control panel.
     fn setup_menu(&self) {
-        let menu = NSMenu::new(self.mtm());
+        let mtm = self.mtm();
+        let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
-        for (index, title) in ["聚光", "数字激光", "实时放大", "方框高亮"]
-            .iter()
-            .enumerate()
-        {
-            let item = self.item(&menu, title, sel!(selectEffect:), "");
+        let status_line = NSMenuItem::new(mtm);
+        status_line.setEnabled(false);
+        menu.addItem(&status_line);
+        self.ivars().status_menu_item.replace(Some(status_line));
+        let effects = NSMenu::new(mtm);
+        effects.setAutoenablesItems(false);
+        for (index, effect) in EFFECTS.iter().enumerate() {
+            let item = self.item(
+                &effects,
+                Self::effect_name(*effect),
+                sel!(selectEffect:),
+                "",
+            );
             item.setTag(index as isize);
             self.ivars().effect_items.borrow_mut().push(item);
         }
-        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-        self.item(&menu, "显示 / 隐藏", sel!(toggle:), "");
-        self.item(&menu, "预览 10 秒", sel!(preview:), "");
-        self.item(&menu, "立即隐藏    ⌃⌥⌘H", sel!(hide:), "");
-        self.item(&menu, "屏幕变黑 / 恢复", sel!(toggleBlackout:), "");
+        let effect_parent = NSMenuItem::new(mtm);
+        effect_parent.setSubmenu(Some(&effects));
+        menu.addItem(&effect_parent);
+        self.ivars().effect_menu_item.replace(Some(effect_parent));
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
         let timer = self.item(&menu, "开始计时", sel!(toggleTimer:), "");
         self.ivars().timer_item.replace(Some(timer));
-        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-        self.item(&menu, "缩小范围", sel!(smaller:), "-");
-        self.item(&menu, "放大范围", sel!(larger:), "+");
-        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-        let remote = self.item(&menu, "连接遥控器", sel!(toggleRemote:), "");
-        self.ivars().remote_item.replace(Some(remote));
-        self.item(&menu, "打开控制面板…", sel!(showControls:), "");
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        self.item(&menu, "控制面板…", sel!(showControls:), ",");
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
         self.item(&menu, &format!("退出{}", app_name()), sel!(quit:), "q");
+        self.refresh_menu();
         let status =
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = status.button(self.mtm()) {
@@ -1411,6 +1352,30 @@ impl Delegate {
     /// Frames follow the display's refresh (CADisplayLink on the pointer's
     /// screen, macOS 14+) so each vsync gets exactly one update; macOS 13
     /// falls back to a 60 Hz timer. Idle checks use a 4 Hz timer.
+    /// Menu titles follow connection, battery and the current effect.
+    fn refresh_menu(&self) {
+        let (_, status) = self.remote_status_line();
+        if let Some(item) = self.ivars().status_menu_item.borrow().as_ref() {
+            let title = format!("● {status}");
+            if item.title().to_string() != title {
+                item.setTitle(&NSString::from_str(&title));
+            }
+        }
+        let effect = self.ivars().presentation.borrow().effect;
+        if let Some(item) = self.ivars().effect_menu_item.borrow().as_ref() {
+            let title = format!("特效：{}", Self::effect_name(effect));
+            if item.title().to_string() != title {
+                item.setTitle(&NSString::from_str(&title));
+            }
+        }
+        let selected = EFFECTS.iter().position(|e| *e == effect).unwrap_or(0) as isize;
+        for item in self.ivars().effect_items.borrow().iter() {
+            let state = if item.tag() == selected { 1 } else { 0 };
+            if item.state() != state {
+                item.setState(state);
+            }
+        }
+    }
     fn install_timer(&self, fast: bool) {
         if let Some(timer) = self.ivars().timer.borrow_mut().take() {
             timer.invalidate();
@@ -1642,15 +1607,8 @@ impl Delegate {
                 "实时放大需要屏幕录制权限；聚光和激光仍可使用。"
             });
         }
-        let selected = match state.effect {
-            Effect::Spotlight => 0,
-            Effect::Laser => 1,
-            Effect::Magnify => 2,
-            Effect::Box => 3,
-        };
-        for item in self.ivars().effect_items.borrow().iter() {
-            item.setState(if item.tag() == selected { 1 } else { 0 });
-        }
+        drop(state);
+        self.refresh_menu();
     }
 }
 
@@ -1720,13 +1678,13 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         remote: RefCell::new(None),
         remote_epoch: Cell::new(0),
         remote_target: RefCell::new(None),
-        remote_item: RefCell::new(None),
+        status_menu_item: RefCell::new(None),
+        effect_menu_item: RefCell::new(None),
         signals: crate::stop_signals::StopSignals::install()?,
         closing: Cell::new(false),
         settings: RefCell::new(settings),
         talk_timer: RefCell::new(PresentationTimer::default()),
         timer_item: RefCell::new(None),
-        auto_reconnect: Cell::new(true),
         retry_at: Cell::new(0.0),
         panel: RefCell::new(None),
         remote_status: Cell::new(RemoteStatus::Connecting),

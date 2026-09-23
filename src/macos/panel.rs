@@ -14,7 +14,6 @@ pub(super) enum RemoteStatus {
     Connected(&'static str),
     Reconnecting,
     Waiting,
-    Disconnected,
 }
 
 pub(super) struct Panel {
@@ -24,11 +23,9 @@ pub(super) struct Panel {
     effect_label: Retained<NSTextField>,
     message: Retained<NSTextField>,
     pub timer_fields: Vec<Retained<NSTextField>>,
-    pub radius: Retained<NSSlider>,
     elapsed: Retained<NSTextField>,
     timer_button: Retained<NSButton>,
     permissions: Vec<(Retained<NSTextField>, Retained<NSButton>)>,
-    remote_button: Retained<NSButton>,
 }
 
 /// (name, why it is needed, System Settings anchor)
@@ -356,23 +353,11 @@ impl Delegate {
         }
         push(&mut views, &separator(mtm));
 
-        // Footer: emergency shortcut and connection control.
-        // SAFETY: target/action refer to this main-thread delegate's selector.
-        let remote_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("断开遥控器"),
-                self.target(),
-                Some(sel!(toggleRemote:)),
-                mtm,
-            )
-        };
+        // Footer: the emergency shortcut. Pairing over Bluetooth or USB is
+        // left to macOS, and quitting the app releases the remote.
         push(
             &mut views,
-            &row(
-                &[&secondary("⌃⌥⌘H 立即隐藏（含黑屏）", mtm)],
-                &[&remote_button],
-                mtm,
-            ),
+            &row(&[&secondary("⌃⌥⌘H 立即隐藏（含黑屏）", mtm)], &[], mtm),
         );
 
         let refs: Vec<&NSView> = views.iter().map(|v| &**v).collect();
@@ -413,11 +398,9 @@ impl Delegate {
             effect_label,
             message,
             timer_fields,
-            radius,
             elapsed,
             timer_button,
             permissions,
-            remote_button,
         }
     }
 
@@ -436,15 +419,34 @@ impl Delegate {
         if !matches!(status, RemoteStatus::Connected(_)) {
             self.ivars().battery.set(None);
         }
-        let title = NSString::from_str(if self.ivars().remote.borrow().is_some() {
-            "断开遥控器"
-        } else {
-            "连接遥控器"
-        });
-        if let Some(item) = self.ivars().remote_item.borrow().as_ref() {
-            item.setTitle(&title);
-        }
+        self.refresh_menu();
         self.refresh_panel(false);
+    }
+
+    /// Connection line shared by the menu and the panel.
+    pub(super) fn remote_status_line(&self) -> (Retained<NSColor>, String) {
+        match self.ivars().remote_status.get() {
+            RemoteStatus::Connected(transport) => {
+                let battery = match self.ivars().battery.get() {
+                    Some((level, 1..=3)) => format!(" · 电量 {level}%（充电中）"),
+                    Some((level, _)) => format!(" · 电量 {level}%"),
+                    None => String::new(),
+                };
+                (
+                    NSColor::systemGreenColor(),
+                    format!("{transport}已连接{battery}"),
+                )
+            }
+            RemoteStatus::Connecting => (NSColor::systemOrangeColor(), "正在连接遥控器…".into()),
+            RemoteStatus::Reconnecting => (
+                NSColor::systemOrangeColor(),
+                "遥控器连接中断，正在自动重连…".into(),
+            ),
+            RemoteStatus::Waiting => (
+                NSColor::systemOrangeColor(),
+                "未找到遥控器，自动重试中".into(),
+            ),
+        }
     }
 
     /// Cheap text updates; `permissions` also re-queries the privacy state.
@@ -458,32 +460,7 @@ impl Delegate {
                 field.setStringValue(&NSString::from_str(text));
             }
         };
-        let (color, text) = match self.ivars().remote_status.get() {
-            RemoteStatus::Connected(transport) => {
-                let battery = match self.ivars().battery.get() {
-                    Some((level, 1..=3)) => format!(" · 电量 {level}%（充电中）"),
-                    Some((level, _)) => format!(" · 电量 {level}%"),
-                    None => String::new(),
-                };
-                (
-                    NSColor::systemGreenColor(),
-                    format!("{transport}已连接{battery}"),
-                )
-            }
-            RemoteStatus::Connecting => (NSColor::systemOrangeColor(), "正在连接…".into()),
-            RemoteStatus::Reconnecting => (
-                NSColor::systemOrangeColor(),
-                "连接中断，正在自动重连…".into(),
-            ),
-            RemoteStatus::Waiting => (
-                NSColor::systemOrangeColor(),
-                "未找到遥控器，自动重试中".into(),
-            ),
-            RemoteStatus::Disconnected => (
-                NSColor::secondaryLabelColor(),
-                "已断开（不自动重连）".into(),
-            ),
-        };
+        let (color, text) = self.remote_status_line();
         panel.status_dot.setTextColor(Some(&color));
         set(&panel.status_text, &text);
         let effect = self.ivars().presentation.borrow().effect;
@@ -491,17 +468,6 @@ impl Delegate {
             &panel.effect_label,
             &format!("当前特效：{}", Self::effect_name(effect)),
         );
-        let connected = self.ivars().remote.borrow().is_some();
-        let remote_title = if connected {
-            "断开遥控器"
-        } else {
-            "连接遥控器"
-        };
-        if panel.remote_button.title().to_string() != remote_title {
-            panel
-                .remote_button
-                .setTitle(&NSString::from_str(remote_title));
-        }
         let elapsed = self.ivars().talk_timer.borrow().elapsed(self.now());
         set(
             &panel.elapsed,
