@@ -52,6 +52,18 @@ sh scripts/bundle.sh
 
 应用生成到 `dist/Orange Beam.app`。可以给打包脚本传入输出目录。`Cargo.lock` 固定依赖版本；许可证和第三方声明随包携带。更新依赖后，用 `cargo metadata` 与 `scripts/collect-licenses.py` 更新第三方声明（仅此维护脚本需要 Python 3 和联网）。
 
+## 安装
+
+从 [Releases](https://github.com/woyin/OrangeBeam/releases) 下载 `Orange-Beam-macos-arm64.zip`，解压后把 `Orange Beam.app` 放进「应用程序」。
+
+也可以用 Homebrew（需要先发布 tap 仓库 `woyin/homebrew-orangebeam`，Cask 文件见 [packaging/homebrew/orange-beam.rb](packaging/homebrew/orange-beam.rb)）：
+
+```sh
+brew install --cask woyin/orangebeam/orange-beam
+```
+
+应用为 ad-hoc 签名、未经公证，首次打开会被 Gatekeeper 拦下：在「系统设置 → 隐私与安全性」中点「仍要打开」，或执行 `xattr -dr com.apple.quarantine "/Applications/Orange Beam.app"`。随后按需授权输入监控（读取遥控器）、辅助功能（长按翻页发送播放快捷键）和屏幕录制（实时放大），控制面板会显示这三项状态。
+
 ## 自动构建
 
 每次推送到 `main` 或提交 Pull Request，GitHub Actions（`.github/workflows/build.yml`）会自动构建，产物在对应运行的 Artifacts 中下载：
