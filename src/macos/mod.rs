@@ -94,6 +94,9 @@ fn app_name() -> &'static str {
     }
 }
 
+/// Posted by a duplicate launch; the running instance opens its panel.
+const SHOW_PANEL: &str = "io.github.woyin.orangebeam.showControls";
+
 /// How long a double-click switch shows the newly selected effect.
 const SWITCH_FLASH_SECONDS: f64 = 1.2;
 
@@ -610,6 +613,16 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self, _notification: &NSNotification) {
             self.setup_menu();
+            // SAFETY: the delegate lives for the process; the observer is
+            // removed by termination of the process itself.
+            unsafe {
+                NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                    self,
+                    sel!(showControls:),
+                    Some(&NSString::from_str(SHOW_PANEL)),
+                    None,
+                );
+            }
             // SAFETY: the delegate owns the registration and unregisters on termination.
             match unsafe { hotkey::HotKeys::new((self as *const Self).cast_mut().cast(), hotkey_action) } {
                 Ok(keys) => { self.ivars().hotkeys.replace(Some(keys)); }
@@ -1658,6 +1671,30 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     Delegate::migrate_support_dir();
+    // One app instance only (the remote-free demo is exempt). Held until exit;
+    // it also guarantees any leftover-diversion record belongs to a process
+    // that has ended, so adopting it cannot take over a live owner.
+    let _instance = if demo.is_none() {
+        let path = Delegate::support_dir("Orange Beam")
+            .ok_or("HOME is not set")?
+            .join("instance.lock");
+        match orange_beam::instance::InstanceLock::acquire(&path)? {
+            Some(lock) => Some(lock),
+            None => {
+                // Ask the running copy to show its panel, so opening a second
+                // one visibly does something instead of quitting silently.
+                eprintln!("INSTANCE another Orange Beam is already running; exiting");
+                // SAFETY: a notification name with no object or user info.
+                unsafe {
+                    NSDistributedNotificationCenter::defaultCenter()
+                        .postNotificationName_object(&NSString::from_str(SHOW_PANEL), None);
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
     let settings = Delegate::load_settings();
     let delegate = Delegate::alloc(mtm).set_ivars(AppData {
         start: Instant::now(),

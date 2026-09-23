@@ -4,6 +4,7 @@
 use std::fmt;
 
 pub mod controls;
+pub mod instance;
 pub mod presentation;
 pub mod settings;
 
