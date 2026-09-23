@@ -357,7 +357,14 @@ impl Delegate {
         // left to macOS, and quitting the app releases the remote.
         push(
             &mut views,
-            &row(&[&secondary("⌃⌥⌘H 立即隐藏（含黑屏）", mtm)], &[], mtm),
+            &row(
+                &[&secondary(
+                    "⌃⌥⌘H 随时立即隐藏；黑屏、画好的方框等停留时也可按 Esc 取消",
+                    mtm,
+                )],
+                &[],
+                mtm,
+            ),
         );
 
         let refs: Vec<&NSView> = views.iter().map(|v| &**v).collect();

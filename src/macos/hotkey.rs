@@ -54,8 +54,16 @@ struct Context {
 pub struct HotKeys {
     handler: Handle,
     keys: Vec<Handle>,
+    /// Escape, registered only while an effect lingers on screen.
+    escape: Option<Handle>,
     _context: Box<Context>,
 }
+
+/// Hot key ids passed to the callback.
+pub const EMERGENCY_HIDE: u32 = 2;
+pub const ESCAPE: u32 = 3;
+const SIGNATURE: u32 = u32::from_be_bytes(*b"SpRS");
+const KVK_ESCAPE: u32 = 53;
 
 unsafe extern "C" fn handle(_call: Handle, event: Handle, context: Handle) -> i32 {
     let mut id = HotKeyId::default();
@@ -72,7 +80,7 @@ unsafe extern "C" fn handle(_call: Handle, event: Handle, context: Handle) -> i3
             (&mut id as *mut HotKeyId).cast(),
         )
     };
-    if result != 0 || id.signature != u32::from_be_bytes(*b"SpRS") {
+    if result != 0 || id.signature != SIGNATURE {
         return -9874;
     }
     let context = unsafe { &*(context as *const Context) };
@@ -89,6 +97,7 @@ impl HotKeys {
         let mut result = Self {
             handler: std::ptr::null_mut(),
             keys: Vec::new(),
+            escape: None,
             _context: context,
         };
         let event_type = EventType {
@@ -119,8 +128,8 @@ impl HotKeys {
                 4,
                 0x1900,
                 HotKeyId {
-                    signature: u32::from_be_bytes(*b"SpRS"),
-                    id: 2,
+                    signature: SIGNATURE,
+                    id: EMERGENCY_HIDE,
                 },
                 event_target,
                 0,
@@ -135,6 +144,39 @@ impl HotKeys {
         result.keys.push(key);
         Ok(result)
     }
+
+    /// Take Escape only while an effect lingers without the remote held (black
+    /// screen, a kept box, manual display, preview). Otherwise Escape belongs
+    /// to the frontmost app, e.g. Keynote uses it to end a slideshow.
+    pub fn set_escape(&mut self, enabled: bool) {
+        if enabled == self.escape.is_some() {
+            return;
+        }
+        // SAFETY: the handle is registered by this object and released once.
+        unsafe {
+            if let Some(key) = self.escape.take() {
+                UnregisterEventHotKey(key);
+                return;
+            }
+            let mut key = std::ptr::null_mut();
+            let status = RegisterEventHotKey(
+                KVK_ESCAPE,
+                0,
+                HotKeyId {
+                    signature: SIGNATURE,
+                    id: ESCAPE,
+                },
+                GetApplicationEventTarget(),
+                0,
+                &mut key,
+            );
+            if status == 0 {
+                self.escape = Some(key);
+            } else {
+                eprintln!("HOTKEY Escape unavailable: {status}");
+            }
+        }
+    }
 }
 
 impl Drop for HotKeys {
@@ -142,7 +184,7 @@ impl Drop for HotKeys {
         // SAFETY: Handles are registered by this object and released exactly once,
         // before dropping the callback context or its target delegate.
         unsafe {
-            for key in self.keys.drain(..) {
+            for key in self.keys.drain(..).chain(self.escape.take()) {
                 UnregisterEventHotKey(key);
             }
             if !self.handler.is_null() {

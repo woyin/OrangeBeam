@@ -190,6 +190,12 @@ impl Presentation {
             _ => None,
         }
     }
+    /// Something stays on screen without the top button held (black screen,
+    /// a kept box or start corner, manual display, preview, switch flash).
+    /// Only then may Escape be taken from the frontmost app to clear it.
+    pub fn lingers(&self, now: f64) -> bool {
+        self.blackout || (self.active(now) && !self.remote_showing())
+    }
     /// The top button is held and not suppressed by an emergency hide.
     pub fn remote_showing(&self) -> bool {
         self.remote_held && !self.remote_suppressed
@@ -381,6 +387,34 @@ mod tests {
         assert_eq!(b.box_view(p, 2.5), None);
         b.preview(3.0, 10.0);
         assert!(matches!(b.box_view(p, 4.0), Some(BoxView::Rect(_))));
+    }
+    #[test]
+    fn escape_is_only_taken_while_an_effect_lingers() {
+        let mut s = Presentation::default();
+        assert!(!s.lingers(0.0), "nothing on screen");
+        s.set_remote_held(true);
+        assert!(!s.lingers(0.0), "releasing the button ends a held effect");
+        s.blackout = true;
+        assert!(s.lingers(0.0), "black screen stays until cleared");
+        s.hide();
+        assert!(!s.lingers(0.0));
+        s.set_remote_held(false);
+        s.toggle(1.0);
+        assert!(s.lingers(1.0), "manual display");
+        s.hide();
+        s.preview(2.0, 10.0);
+        assert!(s.lingers(3.0), "preview");
+        assert!(!s.lingers(12.5), "preview expired");
+        let mut b = Presentation {
+            effect: Effect::Box,
+            ..Default::default()
+        };
+        let p = Point { x: 10.0, y: 10.0 };
+        b.set_remote_held(true);
+        b.begin_box(p);
+        b.finish_box(p);
+        b.set_remote_held(false);
+        assert!(b.lingers(0.0), "start corner stays on screen");
     }
     #[test]
     fn rectangles_intersect_only_when_overlapping() {

@@ -1607,7 +1607,13 @@ impl Delegate {
                 "实时放大需要屏幕录制权限；聚光和激光仍可使用。"
             });
         }
+        // Escape clears what stays on screen without the remote held; while
+        // the top button is down, releasing it already ends the effect.
+        let lingering = state.lingers(now);
         drop(state);
+        if let Some(keys) = self.ivars().hotkeys.borrow_mut().as_mut() {
+            keys.set_escape(lingering);
+        }
         self.refresh_menu();
     }
 }
@@ -1615,8 +1621,8 @@ impl Delegate {
 unsafe fn hotkey_action(target: *mut std::ffi::c_void, action: u32) {
     // SAFETY: Carbon callback is on main and the delegate outlives registration.
     let delegate = unsafe { &*(target as *const Delegate) };
-    // Only the emergency hide is registered; no other global shortcut is taken.
-    if action != 2 {
+    // ⌃⌥⌘H always; Escape only while registered for a lingering effect.
+    if action != hotkey::EMERGENCY_HIDE && action != hotkey::ESCAPE {
         return;
     }
     delegate.ivars().presentation.borrow_mut().hide();
