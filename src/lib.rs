@@ -7,6 +7,7 @@ pub mod controls;
 pub mod instance;
 pub mod presentation;
 pub mod settings;
+pub mod update;
 
 pub const LOGITECH_VENDOR: u16 = 0x046d;
 pub const SOFTWARE_ID: u8 = 0x0a;

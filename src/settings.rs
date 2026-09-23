@@ -1,6 +1,7 @@
 //! User settings for remote gestures and presentation timers.
 //! Platform-independent; the app stores them as a small key=value file.
 use crate::presentation::{clamp_radius, Effect, DEFAULT_RADIUS};
+use crate::update::UpdateCheck;
 
 /// Effects in cycle order; index matches `Settings::cycle`.
 pub const EFFECTS: [Effect; 4] = [
@@ -122,6 +123,9 @@ pub struct Settings {
     pub shade: f64,
     pub zoom: f64,
     pub screen_reminder: ScreenReminder,
+    pub update_check: UpdateCheck,
+    /// Unix seconds of the last successful update check.
+    pub last_update_check: Option<u64>,
 }
 
 impl Default for Settings {
@@ -135,6 +139,8 @@ impl Default for Settings {
             shade: DEFAULT_SHADE,
             zoom: 2.0,
             screen_reminder: ScreenReminder::OnVibrationFailure,
+            update_check: UpdateCheck::Weekly,
+            last_update_check: None,
         }
     }
 }
@@ -205,6 +211,12 @@ impl Settings {
                         }
                     }
                 }
+                "update-check" => {
+                    if let Some(mode) = UpdateCheck::from_key(value) {
+                        settings.update_check = mode;
+                    }
+                }
+                "last-update-check" => settings.last_update_check = value.parse().ok(),
                 "radius" => {
                     if let Ok(radius) = value.parse::<f64>() {
                         settings.radius = clamp_radius(radius);
@@ -229,7 +241,7 @@ impl Settings {
             .map(|t| t.map(|m| m.to_string()).unwrap_or_default())
             .collect();
         format!(
-            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\nradius={}\nshade={:.2}\nzoom={}\nscreen-reminder={}\n",
+            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\nradius={}\nshade={:.2}\nzoom={}\nscreen-reminder={}\nupdate-check={}\nlast-update-check={}\n",
             cycle.join(","),
             self.next_hold.key(),
             self.back_hold.key(),
@@ -237,7 +249,11 @@ impl Settings {
             self.radius.round(),
             self.shade,
             self.zoom,
-            self.screen_reminder.key()
+            self.screen_reminder.key(),
+            self.update_check.key(),
+            self.last_update_check
+                .map(|t| t.to_string())
+                .unwrap_or_default()
         )
     }
 
@@ -316,6 +332,8 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.cycle, [true, true, false, false]);
         assert_eq!(s.screen_reminder, ScreenReminder::OnVibrationFailure);
+        assert_eq!(s.update_check, UpdateCheck::Weekly, "weekly by default");
+        assert_eq!(s.last_update_check, None);
         assert_eq!(s.next_hold, HoldAction::PlayFromCurrent);
         assert_eq!(s.back_hold, HoldAction::BlackScreen);
         assert_eq!(s.timers, [None; 3]);
@@ -332,6 +350,8 @@ mod tests {
             shade: 0.45,
             zoom: 3.0,
             screen_reminder: ScreenReminder::Always,
+            update_check: UpdateCheck::Monthly,
+            last_update_check: Some(1_790_000_000),
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         let damaged = Settings::parse("junk\nnext-hold=explode\ntimers=0,abc,601\ncycle=\n");

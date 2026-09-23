@@ -6,6 +6,7 @@ pub mod input_access;
 mod panel;
 mod remote;
 pub mod render_qa;
+mod update;
 use block2::RcBlock;
 use capture::Capture;
 use dispatch2::{DispatchQueue, MainThreadBound};
@@ -582,6 +583,12 @@ struct AppData {
     // final drop must never synchronously dispatch to a main thread joining it.
     remote_target: RefCell<Option<Arc<MainThreadBound<Retained<Delegate>>>>>,
     status_menu_item: RefCell<Option<Retained<NSMenuItem>>>,
+    update_item: RefCell<Option<Retained<NSMenuItem>>>,
+    update_checking: Cell<bool>,
+    /// Monotonic time of the next scheduled-check evaluation.
+    update_due_at: Cell<f64>,
+    /// Newer release found by the last check: (version, release page URL).
+    available_update: RefCell<Option<(String, String)>>,
     effect_menu_item: RefCell<Option<Retained<NSMenuItem>>>,
     signals: crate::stop_signals::StopSignals,
     closing: Cell<bool>,
@@ -735,6 +742,17 @@ define_class!(
             if mode != ScreenReminder::Off {
                 self.show_toast("⏱ 屏幕提醒示例：显示 5 秒");
             }
+        }
+        #[unsafe(method(checkUpdates:))]
+        fn check_updates(&self, _sender: Option<&AnyObject>) { self.update_menu_action(); }
+        #[unsafe(method(updateFrequencyChanged:))]
+        fn update_frequency_changed(&self, sender: &NSPopUpButton) {
+            let modes = orange_beam::update::UpdateCheck::ALL;
+            let mode = modes[sender.indexOfSelectedItem().clamp(0, modes.len() as isize - 1) as usize];
+            self.ivars().settings.borrow_mut().update_check = mode;
+            self.save_settings();
+            // Re-evaluate soon, so switching to a shorter interval takes effect.
+            self.ivars().update_due_at.set(self.now());
         }
         #[unsafe(method(toggleTimer:))]
         fn toggle_timer(&self, _sender: Option<&AnyObject>) { self.toggle_talk_timer(); }
@@ -1335,6 +1353,8 @@ impl Delegate {
         self.ivars().timer_item.replace(Some(timer));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         self.item(&menu, "控制面板…", sel!(showControls:), ",");
+        let update = self.item(&menu, "检查更新…", sel!(checkUpdates:), "");
+        self.ivars().update_item.replace(Some(update));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         self.item(&menu, &format!("退出{}", app_name()), sel!(quit:), "q");
         self.refresh_menu();
@@ -1364,6 +1384,15 @@ impl Delegate {
         let effect = self.ivars().presentation.borrow().effect;
         if let Some(item) = self.ivars().effect_menu_item.borrow().as_ref() {
             let title = format!("特效：{}", Self::effect_name(effect));
+            if item.title().to_string() != title {
+                item.setTitle(&NSString::from_str(&title));
+            }
+        }
+        if let Some(item) = self.ivars().update_item.borrow().as_ref() {
+            let title = match self.ivars().available_update.borrow().as_ref() {
+                Some((version, _)) => format!("有新版本 {version}…"),
+                None => "检查更新…".to_string(),
+            };
             if item.title().to_string() != title {
                 item.setTitle(&NSString::from_str(&title));
             }
@@ -1505,6 +1534,7 @@ impl Delegate {
             return;
         }
         self.maybe_reconnect();
+        self.maybe_check_for_updates(now);
         let panel_visible = self
             .ivars()
             .panel
@@ -1685,6 +1715,11 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         remote_epoch: Cell::new(0),
         remote_target: RefCell::new(None),
         status_menu_item: RefCell::new(None),
+        update_item: RefCell::new(None),
+        update_checking: Cell::new(false),
+        // Leave launch alone: the first scheduled check waits 30 s.
+        update_due_at: Cell::new(30.0),
+        available_update: RefCell::new(None),
         effect_menu_item: RefCell::new(None),
         signals: crate::stop_signals::StopSignals::install()?,
         closing: Cell::new(false),

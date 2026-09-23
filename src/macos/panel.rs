@@ -26,6 +26,7 @@ pub(super) struct Panel {
     elapsed: Retained<NSTextField>,
     timer_button: Retained<NSButton>,
     permissions: Vec<(Retained<NSTextField>, Retained<NSButton>)>,
+    update_status: Retained<NSTextField>,
 }
 
 /// (name, why it is needed, System Settings anchor)
@@ -353,6 +354,35 @@ impl Delegate {
         }
         push(&mut views, &separator(mtm));
 
+        // Updates: how often to look, plus a manual check. Only the public
+        // GitHub release list is read; nothing installs automatically.
+        push(&mut views, &heading("更新", mtm));
+        let modes = orange_beam::update::UpdateCheck::ALL;
+        let mode_titles: Vec<&str> = modes.iter().map(|m| m.label()).collect();
+        let mode_index = modes
+            .iter()
+            .position(|m| *m == settings.update_check)
+            .unwrap_or(2);
+        let frequency = popup(&mode_titles, mode_index, mtm);
+        // SAFETY: target/action refer to this main-thread delegate's selectors.
+        let check_now = unsafe {
+            frequency.setTarget(self.target());
+            frequency.setAction(Some(sel!(updateFrequencyChanged:)));
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("立即检查"),
+                self.target(),
+                Some(sel!(checkUpdates:)),
+                mtm,
+            )
+        };
+        push(
+            &mut views,
+            &row(&[&caption("自动检查", mtm), &frequency], &[&check_now], mtm),
+        );
+        let update_status = secondary("", mtm);
+        push(&mut views, &row(&[&update_status], &[], mtm));
+        push(&mut views, &separator(mtm));
+
         // Footer: the emergency shortcut. Pairing over Bluetooth or USB is
         // left to macOS, and quitting the app releases the remote.
         push(
@@ -408,6 +438,7 @@ impl Delegate {
             elapsed,
             timer_button,
             permissions,
+            update_status,
         }
     }
 
@@ -475,6 +506,7 @@ impl Delegate {
             &panel.effect_label,
             &format!("当前特效：{}", Self::effect_name(effect)),
         );
+        set(&panel.update_status, &self.update_status_line());
         let elapsed = self.ivars().talk_timer.borrow().elapsed(self.now());
         set(
             &panel.elapsed,

@@ -1,6 +1,6 @@
 [package]
 name = "orange-beam"
-version = "0.2.0"
+version = "1.0.0-beta.2"
 edition = "2021"
 description = "Orange Beam (橙现): native macOS presentation effects for the Logitech Spotlight"
 license = "MIT"
@@ -16,7 +16,7 @@ libc = "0.2"
 objc2 = "0.6.3"
 block2 = "0.6.2"
 objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSView", "NSScreen", "NSEvent", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSCell", "NSButtonCell", "NSColor", "NSBezierPath", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAlert", "NSTextField", "NSText", "NSFont", "NSRunningApplication", "NSWorkspace", "NSPopUpButton", "NSStackView", "NSLayoutConstraint", "NSLayoutAnchor", "NSSlider", "NSSliderCell", "NSBox", "NSUserInterfaceLayout", "libc", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSView", "NSScreen", "NSEvent", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSCell", "NSButtonCell", "NSColor", "NSBezierPath", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAlert", "NSTextField", "NSText", "NSFont", "NSRunningApplication", "NSWorkspace", "NSPopUpButton", "NSPasteboard", "NSStackView", "NSLayoutConstraint", "NSLayoutAnchor", "NSSlider", "NSSliderCell", "NSBox", "NSUserInterfaceLayout", "libc", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
 objc2-core-graphics = "0.3.2"
 objc2-screen-capture-kit = "0.3.2"
 objc2-core-media = "0.3.2"
