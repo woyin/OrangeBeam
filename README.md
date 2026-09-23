@@ -56,7 +56,7 @@ sh scripts/bundle.sh
 
 从 [Releases](https://github.com/woyin/OrangeBeam/releases) 下载 `Orange-Beam-macos-arm64.zip`，解压后把 `Orange Beam.app` 放进「应用程序」。
 
-也可以用 Homebrew（需要先发布 tap 仓库 `woyin/homebrew-orangebeam`，Cask 文件见 [packaging/homebrew/orange-beam.rb](packaging/homebrew/orange-beam.rb)）：
+也可以用 Homebrew 安装，tap 仓库为 [woyin/homebrew-orangebeam](https://github.com/woyin/homebrew-orangebeam)，每次发布后会自动更新到新版本：
 
 ```sh
 brew install --cask woyin/orangebeam/orange-beam
