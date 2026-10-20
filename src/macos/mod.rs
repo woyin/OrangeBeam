@@ -374,7 +374,7 @@ struct Overlay {
 fn display_id(screen: &NSScreen) -> u32 {
     screen
         .deviceDescription()
-        .objectForKey(&NSString::from_str("NSScreenNumber"))
+        .objectForKey(ns_string!("NSScreenNumber"))
         .and_then(|value| value.downcast::<NSNumber>().ok())
         .map(|number| number.unsignedIntValue())
         .unwrap_or(0)
@@ -1489,6 +1489,10 @@ impl Delegate {
     }
     /// One frame: trace (if enabled), then the regular tick.
     fn frame(&self) {
+        if !self.ivars().frame_trace.borrow().enabled {
+            self.tick();
+            return;
+        }
         let started = self.now();
         let mouse = NSEvent::mouseLocation();
         self.tick();

@@ -10,8 +10,12 @@ const BREW_UPGRADE: &str = "brew upgrade --cask orange-beam";
 /// After a failed automatic check (offline, rate limit), wait before retrying.
 const AUTO_RETRY_SECS: f64 = 3600.0;
 
-pub(super) fn current_version() -> Version {
-    Version::parse(env!("CARGO_PKG_VERSION")).expect("Cargo package version is valid")
+/// The running version never changes, and the panel asks for it on every
+/// refresh, so parse the package version once.
+pub(super) fn current_version() -> &'static Version {
+    static VERSION: std::sync::OnceLock<Version> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| Version::parse(env!("CARGO_PKG_VERSION")).expect("valid package version"))
 }
 
 fn unix_now() -> u64 {
@@ -154,7 +158,7 @@ impl Delegate {
         self.ivars().settings.borrow_mut().last_update_check = Some(unix_now());
         self.save_settings();
         let current = current_version();
-        let found = newer_release(&current, &releases)
+        let found = newer_release(current, &releases)
             .map(|(version, release)| (version.as_str().to_string(), release.url.clone()));
         eprintln!(
             "UPDATE checked: current {} newest offered {:?}",
