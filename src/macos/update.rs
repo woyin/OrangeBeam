@@ -7,8 +7,10 @@ use orange_beam::update::{newer_release, Release, Version};
 const RELEASES_API: &str = "https://api.github.com/repos/woyin/OrangeBeam/releases?per_page=20";
 const RELEASES_PAGE: &str = "https://github.com/woyin/OrangeBeam/releases";
 const BREW_UPGRADE: &str = "brew upgrade --cask orange-beam";
-/// After a failed automatic check (offline, rate limit), wait before retrying.
-const AUTO_RETRY_SECS: f64 = 3600.0;
+/// How often a due check is re-evaluated after it ran, failed or did not start
+/// (for example while offline). Short enough that a network that comes up
+/// later is retried, long enough not to hammer GitHub or a captive portal.
+const DUE_PERIOD_SECS: f64 = 600.0;
 
 /// The running version never changes, and the panel asks for it on every
 /// refresh, so parse the package version once.
@@ -101,23 +103,30 @@ impl Delegate {
         if now < self.ivars().update_due_at.get() || self.ivars().initial_demo.is_some() {
             return;
         }
-        self.ivars().update_due_at.set(now + 60.0);
+        // A manual check that is still running becomes the successful check when
+        // it ends; do not schedule another one behind it.
+        if self.ivars().update_checking.get() {
+            return;
+        }
         let due = {
             let settings = self.ivars().settings.borrow();
             settings
                 .update_check
                 .is_due(settings.last_update_check, unix_now())
         };
+        // Never retry faster than this, whether the check never started or failed.
+        self.ivars().update_due_at.set(now + DUE_PERIOD_SECS);
         if due {
             self.check_for_updates(false);
         }
     }
 
     /// `manual` checks report every outcome in an alert; scheduled ones only
-    /// announce a new version (menu item and panel message).
-    pub(super) fn check_for_updates(&self, manual: bool) {
+    /// announce a new version (menu item and panel message). Returns false when
+    /// a check was already running and this request was not started.
+    pub(super) fn check_for_updates(&self, manual: bool) -> bool {
         if self.ivars().update_checking.replace(true) {
-            return;
+            return false;
         }
         if manual {
             self.set_message("正在检查更新…");
@@ -136,19 +145,31 @@ impl Delegate {
                     target.get(mtm).finish_update_check(result, manual);
                 });
             });
-        if let Err(error) = spawned {
-            self.ivars().update_checking.set(false);
-            eprintln!("UPDATE could not start: {error}");
+        match spawned {
+            Ok(_) => true,
+            Err(error) => {
+                self.ivars().update_checking.set(false);
+                eprintln!("UPDATE could not start: {error}");
+                // The scheduled check must not retry every minute either.
+                self.ivars().update_due_at.set(self.now() + DUE_PERIOD_SECS);
+                if manual {
+                    self.alert("无法检查更新", &format!("{error}"), &["好"]);
+                }
+                false
+            }
         }
     }
 
     fn finish_update_check(&self, result: Result<Vec<Release>, String>, manual: bool) {
         self.ivars().update_checking.set(false);
+        // A failed check, manual or scheduled, must not stop the app from
+        // retrying: the scheduled check stays due and runs again after the
+        // due period instead of waiting a whole day for the next interval.
+        self.ivars().update_due_at.set(self.now() + DUE_PERIOD_SECS);
         let releases = match result {
             Ok(releases) => releases,
             Err(error) => {
                 eprintln!("UPDATE check failed: {error}");
-                self.ivars().update_due_at.set(self.now() + AUTO_RETRY_SECS);
                 if manual {
                     self.alert("检查更新失败", &error, &["好"]);
                 }
@@ -192,7 +213,12 @@ impl Delegate {
         let known = self.ivars().available_update.borrow().clone();
         match known {
             Some((version, url)) => self.offer_update(&version, &url),
-            None => self.check_for_updates(true),
+            // A check may already be running (for example the launch check);
+            // say so instead of dropping the click without feedback.
+            None if !self.check_for_updates(true) => {
+                self.set_message("正在检查更新，请稍候；结果会显示在菜单栏和本面板。")
+            }
+            None => {}
         }
     }
 
