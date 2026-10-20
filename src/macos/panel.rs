@@ -1,8 +1,10 @@
 //! Control panel: status first, then effects, buttons, timers and permissions.
 //! Built with stack views so rows size to their content (no fixed frames).
 use super::*;
+use objc2::runtime::Sel;
 use objc2::Message;
 use objc2_core_graphics::CGRequestPostEventAccess;
+use orange_beam::presentation::{MAX_RADIUS, MIN_RADIUS};
 
 const CONTENT_WIDTH: f64 = 440.0;
 const LABEL_WIDTH: f64 = 76.0;
@@ -137,6 +139,52 @@ impl Delegate {
         Some(self)
     }
 
+    /// Point a control at one of this delegate's actions. Every binding shares
+    /// one SAFETY argument: `run` keeps the delegate alive until `app.run()`
+    /// returns, which outlasts every control, and AppKit touches both only on
+    /// the main thread.
+    fn bind(&self, control: &NSControl, action: Sel) {
+        // SAFETY: see above.
+        unsafe {
+            control.setTarget(self.target());
+            control.setAction(Some(action));
+        }
+    }
+
+    /// SAFETY note for every control built below: same target/action argument
+    /// as `bind`, and AppKit is driven only from the main thread.
+    fn slider(
+        &self,
+        value: f64,
+        range: (f64, f64),
+        action: Sel,
+        mtm: MainThreadMarker,
+    ) -> Retained<NSSlider> {
+        // SAFETY: see `bind`.
+        unsafe {
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(
+                value,
+                range.0,
+                range.1,
+                self.target(),
+                Some(action),
+                mtm,
+            )
+        }
+    }
+
+    fn button(&self, title: &NSString, action: Sel, mtm: MainThreadMarker) -> Retained<NSButton> {
+        // SAFETY: see `bind`.
+        unsafe { NSButton::buttonWithTitle_target_action(title, self.target(), Some(action), mtm) }
+    }
+
+    fn checkbox(&self, title: &NSString, action: Sel, mtm: MainThreadMarker) -> Retained<NSButton> {
+        // SAFETY: see `bind`.
+        unsafe {
+            NSButton::checkboxWithTitle_target_action(title, self.target(), Some(action), mtm)
+        }
+    }
+
     fn build_panel(&self) -> Panel {
         let mtm = self.mtm();
         let settings = self.ivars().settings.borrow().clone();
@@ -173,42 +221,24 @@ impl Delegate {
         let mut cycle: Vec<Retained<NSView>> =
             vec![caption("双击切换", mtm).into_super().into_super()];
         for (slot, effect) in EFFECTS.iter().enumerate() {
-            // SAFETY: target/action refer to this main-thread delegate's selector.
-            let button = unsafe {
-                NSButton::checkboxWithTitle_target_action(
-                    &NSString::from_str(Self::effect_name(*effect)),
-                    self.target(),
-                    Some(sel!(cycleChanged:)),
-                    mtm,
-                )
-            };
+            let button = self.checkbox(
+                &NSString::from_str(Self::effect_name(*effect)),
+                sel!(cycleChanged:),
+                mtm,
+            );
             button.setTag(slot as isize);
             button.setState(if settings.cycle[slot] { 1 } else { 0 });
             cycle.push(button.into_super().into_super());
         }
         let cycle_refs: Vec<&NSView> = cycle.iter().map(|v| &**v).collect();
         push(&mut views, &row(&cycle_refs, &[], mtm));
-        // SAFETY: target/action refer to this main-thread delegate's selectors.
-        let (radius, shade) = unsafe {
-            (
-                NSSlider::sliderWithValue_minValue_maxValue_target_action(
-                    settings.radius,
-                    orange_beam::presentation::MIN_RADIUS,
-                    orange_beam::presentation::MAX_RADIUS,
-                    self.target(),
-                    Some(sel!(radiusChanged:)),
-                    mtm,
-                ),
-                NSSlider::sliderWithValue_minValue_maxValue_target_action(
-                    settings.shade,
-                    0.2,
-                    0.9,
-                    self.target(),
-                    Some(sel!(shadeChanged:)),
-                    mtm,
-                ),
-            )
-        };
+        let radius = self.slider(
+            settings.radius,
+            (MIN_RADIUS, MAX_RADIUS),
+            sel!(radiusChanged:),
+            mtm,
+        );
+        let shade = self.slider(settings.shade, (0.2, 0.9), sel!(shadeChanged:), mtm);
         width(&radius, 140.0);
         width(&shade, 110.0);
         let shade_label = label("暗度", mtm);
@@ -230,17 +260,8 @@ impl Delegate {
             .position(|z| *z == settings.zoom)
             .unwrap_or(1);
         let zoom = popup(&zoom_refs, zoom_index, mtm);
-        // SAFETY: target/action refer to this main-thread delegate's selectors.
-        let preview = unsafe {
-            zoom.setTarget(self.target());
-            zoom.setAction(Some(sel!(zoomChanged:)));
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("预览当前特效"),
-                self.target(),
-                Some(sel!(previewCurrent:)),
-                mtm,
-            )
-        };
+        self.bind(&zoom, sel!(zoomChanged:));
+        let preview = self.button(ns_string!("预览当前特效"), sel!(previewCurrent:), mtm);
         push(
             &mut views,
             &row(&[&caption("放大倍数", mtm), &zoom], &[&preview], mtm),
@@ -263,11 +284,7 @@ impl Delegate {
                 .unwrap_or(0);
             let choice = popup(&hold_titles, selected, mtm);
             choice.setTag(tag as isize);
-            // SAFETY: target/action refer to this main-thread delegate's selector.
-            unsafe {
-                choice.setTarget(self.target());
-                choice.setAction(Some(sel!(holdChanged:)));
-            }
+            self.bind(&choice, sel!(holdChanged:));
             width(&choice, 200.0);
             push(&mut views, &row(&[&caption(text, mtm), &choice], &[], mtm));
         }
@@ -311,17 +328,8 @@ impl Delegate {
             .unwrap_or(1);
         let reminder_titles: Vec<&str> = ScreenReminder::ALL.iter().map(|m| m.label()).collect();
         let reminder = popup(&reminder_titles, reminder_index, mtm);
-        // SAFETY: target/action refer to this main-thread delegate's selectors.
-        let timer_button = unsafe {
-            reminder.setTarget(self.target());
-            reminder.setAction(Some(sel!(reminderChanged:)));
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("开始计时"),
-                self.target(),
-                Some(sel!(toggleTimer:)),
-                mtm,
-            )
-        };
+        self.bind(&reminder, sel!(reminderChanged:));
+        let timer_button = self.button(ns_string!("开始计时"), sel!(toggleTimer:), mtm);
         push(
             &mut views,
             &row(
@@ -339,15 +347,7 @@ impl Delegate {
             let state = label(name, mtm);
             width(&state, 110.0);
             let why = secondary(purpose, mtm);
-            // SAFETY: target/action refer to this main-thread delegate's selector.
-            let open = unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    ns_string!("去设置"),
-                    self.target(),
-                    Some(sel!(openPrivacy:)),
-                    mtm,
-                )
-            };
+            let open = self.button(ns_string!("去设置"), sel!(openPrivacy:), mtm);
             open.setTag(slot as isize);
             push(&mut views, &row(&[&state, &why], &[&open], mtm));
             permissions.push((state, open));
@@ -364,17 +364,8 @@ impl Delegate {
             .position(|m| *m == settings.update_check)
             .unwrap_or(2);
         let frequency = popup(&mode_titles, mode_index, mtm);
-        // SAFETY: target/action refer to this main-thread delegate's selectors.
-        let check_now = unsafe {
-            frequency.setTarget(self.target());
-            frequency.setAction(Some(sel!(updateFrequencyChanged:)));
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("立即检查"),
-                self.target(),
-                Some(sel!(checkUpdates:)),
-                mtm,
-            )
-        };
+        self.bind(&frequency, sel!(updateFrequencyChanged:));
+        let check_now = self.button(ns_string!("立即检查"), sel!(checkUpdates:), mtm);
         push(
             &mut views,
             &row(&[&caption("自动检查", mtm), &frequency], &[&check_now], mtm),
@@ -493,22 +484,17 @@ impl Delegate {
         let Some(panel) = panel.as_ref() else {
             return;
         };
-        let set = |field: &NSTextField, text: &str| {
-            if field.stringValue().to_string() != text {
-                field.setStringValue(&NSString::from_str(text));
-            }
-        };
         let (color, text) = self.remote_status_line();
         panel.status_dot.setTextColor(Some(&color));
-        set(&panel.status_text, &text);
+        set_field_text_if_changed(&panel.status_text, &text);
         let effect = self.ivars().presentation.borrow().effect;
-        set(
+        set_field_text_if_changed(
             &panel.effect_label,
             &format!("当前特效：{}", Self::effect_name(effect)),
         );
-        set(&panel.update_status, &self.update_status_line());
+        set_field_text_if_changed(&panel.update_status, &self.update_status_line());
         let elapsed = self.ivars().talk_timer.borrow().elapsed(self.now());
-        set(
+        set_field_text_if_changed(
             &panel.elapsed,
             &elapsed
                 .map(|s| format!("已用 {:02}:{:02}", s as u64 / 60, s as u64 % 60))
@@ -519,16 +505,12 @@ impl Delegate {
         } else {
             "开始计时"
         };
-        if panel.timer_button.title().to_string() != timer_title {
-            panel
-                .timer_button
-                .setTitle(&NSString::from_str(timer_title));
-        }
+        set_button_title_if_changed(&panel.timer_button, timer_title);
         if permissions {
             for (slot, (state, open)) in panel.permissions.iter().enumerate() {
                 let granted = permission_granted(slot);
                 let name = PERMISSIONS[slot].0;
-                set(
+                set_field_text_if_changed(
                     state,
                     &format!("{} {name}", if granted { "✓" } else { "✗" }),
                 );

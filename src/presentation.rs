@@ -141,7 +141,8 @@ impl Presentation {
     }
     /// Top button pressed. Without a start corner this begins aiming (and
     /// drops any kept rectangle); with one it begins dragging the rectangle.
-    pub fn begin_box(&mut self, _pointer: Point) {
+    /// The pointer is read only while drawing, so nothing about it is stored.
+    pub fn begin_box(&mut self) {
         if self.effect != Effect::Box {
             return;
         }
@@ -297,7 +298,7 @@ mod tests {
         let end = Point { x: 100.0, y: 250.0 };
         // First hold: pointer moves freely; release fixes the start corner.
         s.set_remote_held(true);
-        s.begin_box(aim);
+        s.begin_box();
         assert_eq!(s.box_view(aim, 0.0), Some(BoxView::Aim(aim)));
         assert_eq!(s.box_view(start, 0.0), Some(BoxView::Aim(start)));
         s.finish_box(start);
@@ -306,7 +307,7 @@ mod tests {
         assert!(s.active(1.0), "the start marker stays visible");
         // Second hold drags live from the fixed corner; release keeps it.
         s.set_remote_held(true);
-        s.begin_box(start);
+        s.begin_box();
         let dragged = Rect {
             x: 100.0,
             y: 250.0,
@@ -320,13 +321,13 @@ mod tests {
         assert!(s.active(1.0));
         // The next hold aims a new rectangle and drops the kept one.
         s.set_remote_held(true);
-        s.begin_box(aim);
+        s.begin_box();
         assert_eq!(s.box_view(aim, 0.0), Some(BoxView::Aim(aim)));
         s.finish_box(aim);
         s.set_remote_held(false);
         // A click-sized second drag cancels instead of leaving a sliver.
         s.set_remote_held(true);
-        s.begin_box(aim);
+        s.begin_box();
         s.finish_box(Point { x: 53.0, y: 62.0 });
         s.set_remote_held(false);
         assert_eq!(s.box_view(aim, 0.0), None);
@@ -339,19 +340,19 @@ mod tests {
             ..Default::default()
         };
         s.set_remote_held(true);
-        s.begin_box(Point { x: 0.0, y: 0.0 });
+        s.begin_box();
         s.finish_box(Point { x: 0.0, y: 0.0 });
         s.set_remote_held(false);
         assert!(s.has_box(), "start corner fixed");
         s.set_remote_held(true);
-        s.begin_box(Point { x: 0.0, y: 0.0 });
+        s.begin_box();
         s.hide(); // emergency hide during the drag
         s.finish_box(Point { x: 200.0, y: 200.0 });
         s.set_remote_held(false);
         assert!(!s.has_box());
         s.effect = Effect::Spotlight;
         s.set_remote_held(true);
-        s.begin_box(Point { x: 0.0, y: 0.0 });
+        s.begin_box();
         s.finish_box(Point { x: 200.0, y: 200.0 });
         assert!(!s.has_box(), "spotlight mode never creates a rectangle");
     }
@@ -411,7 +412,7 @@ mod tests {
         };
         let p = Point { x: 10.0, y: 10.0 };
         b.set_remote_held(true);
-        b.begin_box(p);
+        b.begin_box();
         b.finish_box(p);
         b.set_remote_held(false);
         assert!(b.lingers(0.0), "start corner stays on screen");

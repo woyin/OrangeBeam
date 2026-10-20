@@ -134,6 +134,47 @@ fn union_rect(a: NSRect, b: NSRect) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(right - x, top - y))
 }
 
+/// Logical (points) rectangle of an AppKit frame, in the global space the
+/// presentation code works in.
+fn screen_rect(frame: NSRect) -> Rect {
+    Rect {
+        x: frame.origin.x,
+        y: frame.origin.y,
+        width: frame.size.width,
+        height: frame.size.height,
+    }
+}
+
+/// The one rule for which display owns a global point: the half-open
+/// rectangle in logical points, so a shared edge belongs to exactly one.
+fn contains(rect: Rect, point: NSPoint) -> bool {
+    rect.local_point(Point {
+        x: point.x,
+        y: point.y,
+    })
+    .is_some()
+}
+
+/// AppKit work is not free, and these run from the per-frame path: compare
+/// first, so an unchanged label queues no redisplay work.
+fn set_menu_title_if_changed(item: &NSMenuItem, title: &str) {
+    if item.title().to_string() != title {
+        item.setTitle(&NSString::from_str(title));
+    }
+}
+
+fn set_button_title_if_changed(button: &NSButton, title: &str) {
+    if button.title().to_string() != title {
+        button.setTitle(&NSString::from_str(title));
+    }
+}
+
+fn set_field_text_if_changed(field: &NSTextField, text: &str) {
+    if field.stringValue().to_string() != text {
+        field.setStringValue(&NSString::from_str(text));
+    }
+}
+
 impl ViewData {
     fn look(&self) -> Look {
         let around = |p: NSPoint, r: f64| {
@@ -430,12 +471,7 @@ impl Overlay {
         }
     }
     fn global_frame(&self) -> Rect {
-        Rect {
-            x: self.frame.origin.x,
-            y: self.frame.origin.y,
-            width: self.frame.size.width,
-            height: self.frame.size.height,
-        }
+        screen_rect(self.frame)
     }
     /// Box effect: a rectangle shades every display it touches; corner
     /// markers appear only on the display that contains them.
@@ -467,13 +503,7 @@ impl Overlay {
         self.repaint(before, false);
     }
     fn render(&self, pointer: NSPoint, state: &Presentation, capture: &Capture) {
-        let rect = Rect {
-            x: self.frame.origin.x,
-            y: self.frame.origin.y,
-            width: self.frame.size.width,
-            height: self.frame.size.height,
-        };
-        let Some(local) = rect.local_point(Point {
+        let Some(local) = self.global_frame().local_point(Point {
             x: pointer.x,
             y: pointer.y,
         }) else {
@@ -899,7 +929,7 @@ impl Delegate {
                     let mut state = self.ivars().presentation.borrow_mut();
                     if down {
                         state.set_remote_held(true);
-                        state.begin_box(pointer);
+                        state.begin_box();
                     } else {
                         state.finish_box(pointer);
                         state.set_remote_held(false);
@@ -1227,16 +1257,12 @@ impl Delegate {
                 Some(clock) => format!("停止计时（{clock}）"),
                 None => "开始计时".to_string(),
             };
-            if item.title().to_string() != title {
-                item.setTitle(&NSString::from_str(&title));
-            }
+            set_menu_title_if_changed(item, &title);
         }
         let status = clock.map(|clock| format!(" {clock}")).unwrap_or_default();
         if let Some(item) = self.ivars().status.borrow().as_ref() {
             if let Some(button) = item.button(self.mtm()) {
-                if button.title().to_string() != status {
-                    button.setTitle(&NSString::from_str(&status));
-                }
+                set_button_title_if_changed(&button, &status);
             }
         }
     }
@@ -1376,26 +1402,18 @@ impl Delegate {
     fn refresh_menu(&self) {
         let (_, status) = self.remote_status_line();
         if let Some(item) = self.ivars().status_menu_item.borrow().as_ref() {
-            let title = format!("● {status}");
-            if item.title().to_string() != title {
-                item.setTitle(&NSString::from_str(&title));
-            }
+            set_menu_title_if_changed(item, &format!("● {status}"));
         }
         let effect = self.ivars().presentation.borrow().effect;
         if let Some(item) = self.ivars().effect_menu_item.borrow().as_ref() {
-            let title = format!("特效：{}", Self::effect_name(effect));
-            if item.title().to_string() != title {
-                item.setTitle(&NSString::from_str(&title));
-            }
+            set_menu_title_if_changed(item, &format!("特效：{}", Self::effect_name(effect)));
         }
         if let Some(item) = self.ivars().update_item.borrow().as_ref() {
             let title = match self.ivars().available_update.borrow().as_ref() {
                 Some((version, _)) => format!("有新版本 {version}…"),
                 None => "检查更新…".to_string(),
             };
-            if item.title().to_string() != title {
-                item.setTitle(&NSString::from_str(&title));
-            }
+            set_menu_title_if_changed(item, &title);
         }
         let selected = EFFECTS.iter().position(|e| *e == effect).unwrap_or(0) as isize;
         for item in self.ivars().effect_items.borrow().iter() {
@@ -1435,13 +1453,7 @@ impl Delegate {
         let screens = NSScreen::screens(self.mtm());
         screens
             .iter()
-            .find(|screen| {
-                let f = screen.frame();
-                pointer.x >= f.origin.x
-                    && pointer.y >= f.origin.y
-                    && pointer.x < f.origin.x + f.size.width
-                    && pointer.y < f.origin.y + f.size.height
-            })
+            .find(|screen| contains(screen_rect(screen.frame()), pointer))
             .or_else(|| screens.firstObject())
     }
     fn start_display_link(&self) -> bool {
@@ -1588,18 +1600,15 @@ impl Delegate {
         let pointer = NSEvent::mouseLocation();
         if active && state.effect == Effect::Magnify && self.ivars().capture_allowed.get() {
             for overlay in self.ivars().overlays.borrow().iter() {
-                let r = overlay.frame;
-                if pointer.x >= r.origin.x
-                    && pointer.y >= r.origin.y
-                    && pointer.x < r.origin.x + r.size.width
-                    && pointer.y < r.origin.y + r.size.height
-                {
-                    self.ivars().capture.start(
-                        overlay.display_id,
-                        (r.size.width * overlay.scale).round() as usize,
-                        (r.size.height * overlay.scale).round() as usize,
-                    );
+                if !contains(overlay.global_frame(), pointer) {
+                    continue;
                 }
+                let r = overlay.frame;
+                self.ivars().capture.start(
+                    overlay.display_id,
+                    (r.size.width * overlay.scale).round() as usize,
+                    (r.size.height * overlay.scale).round() as usize,
+                );
             }
         } else if self.ivars().capture.frame().is_some()
             || state.effect != Effect::Magnify

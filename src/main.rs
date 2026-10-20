@@ -111,6 +111,48 @@ enum Command {
     },
 }
 
+impl Command {
+    /// Interface number from `list` that the command operates on. Read access
+    /// needs the Input Monitoring permission and breaks under Secure Input.
+    fn device(&self) -> Option<usize> {
+        match self {
+            Command::Probe { device, .. }
+            | Command::Inspect { device, .. }
+            | Command::Capture { device, .. }
+            | Command::WatchTop { device, .. }
+            | Command::WatchControls { device, .. }
+            | Command::Vibrate { device, .. }
+            | Command::RecoverTop { device, .. }
+            | Command::RecoverControls { device, .. } => Some(*device),
+            Command::App
+            | Command::RenderQa { .. }
+            | Command::Demo { .. }
+            | Command::Help
+            | Command::List => None,
+        }
+    }
+
+    /// Commands that call the device's HID++ feature API instead of leaving
+    /// navigation to the system, so they need the vendor-defined interface.
+    fn needs_vendor_interface(&self) -> bool {
+        match self {
+            Command::Probe { .. }
+            | Command::Inspect { .. }
+            | Command::WatchTop { .. }
+            | Command::WatchControls { .. }
+            | Command::Vibrate { .. }
+            | Command::RecoverTop { .. }
+            | Command::RecoverControls { .. } => true,
+            Command::App
+            | Command::RenderQa { .. }
+            | Command::Demo { .. }
+            | Command::Help
+            | Command::List
+            | Command::Capture { .. } => false,
+        }
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<Command> {
     match args.first().map(String::as_str) {
         None => Ok(Command::App),
@@ -258,7 +300,7 @@ fn ensure_input_available() -> Result<()> {
 }
 
 fn transact(device: &HidDevice, request: &Report) -> Result<Report> {
-    transact_observing(device, request, &mut |_| {})
+    transact_observing(device, request, |_| {})
 }
 
 /// Like transact, but hands every other HID++ report read while waiting to
@@ -266,7 +308,7 @@ fn transact(device: &HidDevice, request: &Report) -> Result<Report> {
 fn transact_observing(
     device: &HidDevice,
     request: &Report,
-    other: &mut dyn FnMut(&Report),
+    mut other: impl FnMut(&Report),
 ) -> Result<Report> {
     ensure_input_available()?;
     // A single request is outstanding. A hard deadline still applies if input is busy.
@@ -685,17 +727,7 @@ fn run() -> Result<()> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         return Err("Render fixtures require macOS Apple Silicon".into());
     }
-    if matches!(
-        command,
-        Command::Probe { .. }
-            | Command::Inspect { .. }
-            | Command::Capture { .. }
-            | Command::WatchTop { .. }
-            | Command::WatchControls { .. }
-            | Command::Vibrate { .. }
-            | Command::RecoverTop { .. }
-            | Command::RecoverControls { .. }
-    ) {
+    if command.device().is_some() {
         ensure_input_available()?;
     }
     let api = HidApi::new()?;
@@ -722,31 +754,13 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
-    let number = match command {
-        Command::Probe { device, .. }
-        | Command::Inspect { device, .. }
-        | Command::WatchTop { device, .. }
-        | Command::WatchControls { device, .. }
-        | Command::Vibrate { device, .. }
-        | Command::RecoverTop { device, .. }
-        | Command::RecoverControls { device, .. }
-        | Command::Capture { device, .. } => device,
-        _ => unreachable!(),
-    };
+    let number = command
+        .device()
+        .expect("commands without a device returned above");
     let info = devices
         .get(number)
         .ok_or("No such Spotlight interface. Connect the device and run list again.")?;
-    if matches!(
-        command,
-        Command::Probe { .. }
-            | Command::Inspect { .. }
-            | Command::WatchTop { .. }
-            | Command::WatchControls { .. }
-            | Command::Vibrate { .. }
-            | Command::RecoverTop { .. }
-            | Command::RecoverControls { .. }
-    ) && info.usage_page() < 0xff00
-    {
+    if command.needs_vendor_interface() && info.usage_page() < 0xff00 {
         return Err(
             "probe/inspect/watch-top/watch-controls/vibrate requires a vendor-defined HID interface; choose its DEVICE number from list"
                 .into(),

@@ -270,7 +270,7 @@ fn run(
                             Report::request(index, presenter, 1, SOFTWARE_ID, &VIBRATION)?;
                         // Button notifications read while waiting are still handled.
                         if let Err(error) =
-                            crate::transact_observing(&device, &request, &mut |r| buttons.handle(r))
+                            crate::transact_observing(&device, &request, |r| buttons.handle(r))
                         {
                             eprintln!("REMOTE vibration failed: {error}");
                             notify(Event::VibrationFailed(reminder));
@@ -281,7 +281,7 @@ fn run(
             if let Some(battery) = battery.filter(|_| std::time::Instant::now() >= battery_due) {
                 battery_due = std::time::Instant::now() + std::time::Duration::from_secs(300);
                 let request = Report::request(index, battery, 0, SOFTWARE_ID, &[])?;
-                match crate::transact_observing(&device, &request, &mut |r| buttons.handle(r)) {
+                match crate::transact_observing(&device, &request, |r| buttons.handle(r)) {
                     Ok(reply) if reply.payload().len() >= 3 => {
                         let p = reply.payload();
                         notify(Event::Battery(p[0].min(100), p[2]));
