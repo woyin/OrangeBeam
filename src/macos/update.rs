@@ -170,6 +170,8 @@ impl Delegate {
             Ok(releases) => releases,
             Err(error) => {
                 eprintln!("UPDATE check failed: {error}");
+                self.ivars().update_failure.replace(Some(error.clone()));
+                self.refresh_panel(false);
                 if manual {
                     self.alert("检查更新失败", &error, &["好"]);
                 }
@@ -187,6 +189,7 @@ impl Delegate {
             found.as_ref().map(|(v, _)| v)
         );
         self.ivars().available_update.replace(found.clone());
+        self.ivars().update_failure.replace(None);
         self.refresh_menu();
         self.refresh_panel(false);
         match found {
@@ -277,11 +280,18 @@ impl Delegate {
     pub(super) fn update_status_line(&self) -> String {
         let current = current_version();
         let last = self.ivars().settings.borrow().last_update_check;
-        let when = match last {
-            None => "尚未检查".to_string(),
-            Some(last) => match unix_now().saturating_sub(last) / 86_400 {
-                0 => "上次检查：今天".to_string(),
-                days => format!("上次检查：{days} 天前"),
+        let when = match self.ivars().update_failure.borrow().as_ref() {
+            // A failed check keeps retrying; say so rather than hide it.
+            Some(error) => format!(
+                "上次检查失败：{}",
+                error.lines().next().unwrap_or("").trim()
+            ),
+            None => match last {
+                None => "尚未检查".to_string(),
+                Some(last) => match unix_now().saturating_sub(last) / 86_400 {
+                    0 => "上次检查：今天".to_string(),
+                    days => format!("上次检查：{days} 天前"),
+                },
             },
         };
         match self.ivars().available_update.borrow().as_ref() {

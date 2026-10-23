@@ -619,6 +619,9 @@ struct AppData {
     update_due_at: Cell<f64>,
     /// Newer release found by the last check: (version, release page URL).
     available_update: RefCell<Option<(String, String)>>,
+    /// Why the last check failed, so a scheduled failure is visible in the
+    /// panel even though only a manual check opens an alert.
+    update_failure: RefCell<Option<String>>,
     effect_menu_item: RefCell<Option<Retained<NSMenuItem>>>,
     signals: crate::stop_signals::StopSignals,
     closing: Cell<bool>,
@@ -1733,6 +1736,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         // Leave launch alone: the first scheduled check waits 30 s.
         update_due_at: Cell::new(30.0),
         available_update: RefCell::new(None),
+        update_failure: RefCell::new(None),
         effect_menu_item: RefCell::new(None),
         signals: crate::stop_signals::StopSignals::install()?,
         closing: Cell::new(false),
