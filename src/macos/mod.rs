@@ -1549,6 +1549,9 @@ impl Delegate {
                 .exit_after
                 .is_some_and(|seconds| now >= seconds)
         {
+            // Quitting stops the timers, so the frame trace would never see an
+            // idle frame and print its summary; close the open run here.
+            self.ivars().frame_trace.borrow_mut().report();
             NSApplication::sharedApplication(self.mtm()).terminate(None);
             return;
         }
