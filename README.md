@@ -83,6 +83,8 @@ cargo run -- render-fixtures /tmp/spotlight-render-qa
 
 `render-fixtures` 使用真实覆盖层绘制代码和合成画面，生成三张效果图并检查透明度。它不截取桌面、不需要屏幕录制权限，不能代替实时采集验收。示例图见 [聚光](docs/qa/spotlight.png)、[激光](docs/qa/laser.png)、[放大](docs/qa/magnify.png)。
 
+设置环境变量 `ORANGE_BEAM_TRACE_FRAMES=1` 可测量每帧耗时：效果结束时向 stderr 输出一行，含帧间隔和每帧工作时间的 p50、p95、最大值。`demo` 模式下到期退出前也会输出。在 Apple Silicon、release 构建下实测，聚光 `work_ms` 的 p50 约 0.02 ms、p95 约 0.02–0.03 ms，帧间隔 p50 为 16.7 ms（60 Hz）。
+
 ## 设备验证
 
 ```sh
