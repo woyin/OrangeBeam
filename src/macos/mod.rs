@@ -286,7 +286,7 @@ define_class!(
         #[unsafe(method(isOpaque))]
         fn opaque(&self) -> bool { false }
         #[unsafe(method(drawRect:))]
-        fn draw(&self, _dirty: NSRect) {
+        fn draw(&self, dirty: NSRect) {
             let data = self.ivars();
             let bounds = self.bounds();
             let center = data.center.get();
@@ -294,15 +294,15 @@ define_class!(
             let circle = NSRect::new(NSPoint::new(center.x - radius, center.y - radius), NSSize::new(radius * 2.0, radius * 2.0));
             // Clear the previous frame explicitly to avoid trails in a transparent window.
             NSColor::clearColor().setFill();
-            NSRectFillUsingOperation(bounds, NSCompositingOperation::Copy);
+            NSRectFillUsingOperation(dirty, NSCompositingOperation::Copy);
             if data.black.get() {
                 NSColor::blackColor().setFill();
-                NSRectFillUsingOperation(bounds, NSCompositingOperation::Copy);
+                NSRectFillUsingOperation(dirty, NSCompositingOperation::Copy);
                 return;
             }
             match data.effect.get() {
                 Effect::Spotlight | Effect::Magnify => {
-                    let mask = NSBezierPath::bezierPathWithRect(bounds);
+                    let mask = NSBezierPath::bezierPathWithRect(dirty);
                     mask.appendBezierPathWithOvalInRect(circle);
                     mask.setWindingRule(NSWindingRule::EvenOdd);
                     NSColor::colorWithSRGBRed_green_blue_alpha(0.0, 0.0, 0.0, data.shade.get()).setFill();
@@ -327,7 +327,7 @@ define_class!(
                     BoxDraw::Aim(point) => draw_corner_marker(point, false),
                     BoxDraw::Anchor(point) => draw_corner_marker(point, true),
                     BoxDraw::Rect(rect) => {
-                        let mask = NSBezierPath::bezierPathWithRect(bounds);
+                        let mask = NSBezierPath::bezierPathWithRect(dirty);
                         mask.appendBezierPathWithRect(rect);
                         mask.setWindingRule(NSWindingRule::EvenOdd);
                         NSColor::colorWithSRGBRed_green_blue_alpha(0.0, 0.0, 0.0, data.shade.get()).setFill();
@@ -633,6 +633,9 @@ struct AppData {
     settings: RefCell<Settings>,
     talk_timer: RefCell<PresentationTimer>,
     timer_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// Whole seconds of the talk timer shown last time: an unchanged value
+    /// means no title can change, so the frame skips both AppKit updates.
+    timer_clock: Cell<Option<u64>>,
     retry_at: Cell<f64>,
     panel: RefCell<Option<Panel>>,
     remote_status: Cell<RemoteStatus>,
@@ -681,6 +684,9 @@ define_class!(
                 let mut state = self.ivars().presentation.borrow_mut();
                 state.effect = effect;
                 state.preview(self.now(), seconds);
+                drop(state);
+                // The effect menu follows the demo effect; tick() no longer polls it.
+                self.refresh_menu();
             }
             if self.ivars().initial_demo.is_none() { self.show_controls(); self.start_remote(); }
             self.install_timer(false);
@@ -706,7 +712,7 @@ define_class!(
         fn on_display_frame(&self, _link: &AnyObject) {
             // Follow the pointer to another display's refresh cadence.
             let linked = self.ivars().display_link.borrow().as_ref().map(|(_, id)| *id);
-            let current = self.pointer_screen().map(|screen| display_id(&screen));
+            let current = self.pointer_display_id(NSEvent::mouseLocation());
             if linked.is_some() && current.is_some() && linked != current {
                 self.install_timer(true);
             }
@@ -947,6 +953,7 @@ impl Delegate {
             remote::Event::Battery(level, status) => {
                 self.ivars().battery.set(Some((level, status)));
                 self.refresh_panel(false);
+                self.refresh_menu();
             }
             remote::Event::PageTurn => {
                 if self.ivars().presentation.borrow().has_box() {
@@ -1101,6 +1108,7 @@ impl Delegate {
             state.effect = effect;
         }
         self.refresh_panel(false);
+        self.refresh_menu();
     }
     fn show_toast(&self, text: &str) {
         let mtm = self.mtm();
@@ -1292,14 +1300,24 @@ impl Delegate {
             }
         }
         self.update_timer_ui();
+        // Starting or stopping is a visible change even when the second did
+        // not change, and the panel is no longer refreshed from here.
+        self.refresh_panel(false);
     }
     fn update_timer_ui(&self) {
-        let elapsed = self.ivars().talk_timer.borrow().elapsed(self.now());
-        let clock = elapsed.map(|seconds| {
-            let seconds = seconds as u64;
-            format!("{:02}:{:02}", seconds / 60, seconds % 60)
-        });
-        self.refresh_panel(false);
+        let seconds = self
+            .ivars()
+            .talk_timer
+            .borrow()
+            .elapsed(self.now())
+            .map(|seconds| seconds as u64);
+        // Titles can change only with the whole second; otherwise leave the
+        // NSString round trips out of the frame. The panel is refreshed by the
+        // once-a-second throttle in tick().
+        if self.ivars().timer_clock.replace(seconds) == seconds {
+            return;
+        }
+        let clock = seconds.map(|seconds| format!("{:02}:{:02}", seconds / 60, seconds % 60));
         if let Some(item) = self.ivars().timer_item.borrow().as_ref() {
             let title = match &clock {
                 Some(clock) => format!("停止计时（{clock}）"),
@@ -1507,6 +1525,16 @@ impl Delegate {
             .find(|screen| contains(screen_rect(screen.frame()), pointer))
             .or_else(|| screens.firstObject())
     }
+    /// Display under the pointer from the cached overlay geometry, so the
+    /// per-frame path never enumerates NSScreen or its device description.
+    fn pointer_display_id(&self, pointer: NSPoint) -> Option<u32> {
+        let overlays = self.ivars().overlays.borrow();
+        overlays
+            .iter()
+            .find(|o| contains(o.global_frame(), pointer))
+            .or_else(|| overlays.first())
+            .map(|o| o.display_id)
+    }
     fn start_display_link(&self) -> bool {
         let Some(screen) = self.pointer_screen() else {
             return false;
@@ -1680,10 +1708,7 @@ impl Delegate {
                     (r.size.height * overlay.scale).round() as usize,
                 );
             }
-        } else if self.ivars().capture.frame().is_some()
-            || state.effect != Effect::Magnify
-            || !active
-        {
+        } else if self.ivars().capture.has_frame() || state.effect != Effect::Magnify || !active {
             self.ivars().capture.stop();
         }
         let pointer_point = Point {
@@ -1706,10 +1731,7 @@ impl Delegate {
         }
         if let Some(error) = self.ivars().capture.error() {
             self.set_message(&format!("放大镜已停止：{error}"));
-        } else if active
-            && state.effect == Effect::Magnify
-            && self.ivars().capture.frame().is_none()
-        {
+        } else if active && state.effect == Effect::Magnify && !self.ivars().capture.has_frame() {
             self.set_message(if self.ivars().capture_allowed.get() {
                 "正在启动屏幕采集…"
             } else {
@@ -1723,7 +1745,6 @@ impl Delegate {
         if let Some(keys) = self.ivars().hotkeys.borrow_mut().as_mut() {
             keys.set_escape(lingering);
         }
-        self.refresh_menu();
     }
 }
 
@@ -1809,6 +1830,7 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         settings: RefCell::new(settings),
         talk_timer: RefCell::new(PresentationTimer::default()),
         timer_item: RefCell::new(None),
+        timer_clock: Cell::new(None),
         retry_at: Cell::new(0.0),
         panel: RefCell::new(None),
         remote_status: Cell::new(RemoteStatus::Connecting),

@@ -190,6 +190,10 @@ impl Capture {
             .as_ref()
             .map(|image| (self.ivars().sequence.get(), image.clone()))
     }
+    /// Whether a frame is available, without cloning the image to check it.
+    pub fn has_frame(&self) -> bool {
+        self.ivars().image.borrow().is_some()
+    }
     pub fn error(&self) -> Option<String> {
         self.ivars().error.borrow().clone()
     }
