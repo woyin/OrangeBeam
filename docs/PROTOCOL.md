@@ -59,16 +59,17 @@ Slot 1 was initially reference-based and has since returned successful Bluetooth
 feature queries on the user's unit (2026-09-22); USB remains unverified.
 The CLI permits slots 1–6 and requires explicit selection of an interface.
 
-## Not implemented or verified
+## Verification status
 
-- Top-button notifications and basic Bluetooth spotlight activation are verified;
-  gestures, laser/magnifier integration and broader presentation scenarios remain unverified.
-- Vibration and remapping. Battery status is read by `inspect`, but not yet shown in the GUI.
-- Hotplug, sleep/resume, firmware differences and coexistence with Options+.
-- Spotlight 2 discovery through a shared Bolt receiver or Bluetooth.
-- Full-screen/multi-display acceptance of the implemented device integration.
+- Top-button notifications and basic Bluetooth spotlight activation are verified on hardware;
+  double-click switching (`00df`), long-press page actions (`00da`/`00dc`), classroom countdown
+  short-key takeover (`00d9`/`00db`), vibration (`1a00`) and GUI battery polling (`1000`) are
+  implemented and unit-tested, with full presentation acceptance still pending.
+- USB receiver transport, physical hotplug, sleep/resume, firmware differences and coexistence with Options+ remain unverified on hardware.
+- Spotlight 2 discovery through a shared Bolt receiver or Bluetooth is out of scope.
+- Full-screen/multi-display acceptance of the implemented device integration remains pending.
 
-## Native app implementation (0.2.0)
+## Native app implementation (1.0-beta.2)
 
 The native Rust implementation uses objc2 0.6.4 and Apple framework bindings
 0.3.2. NSPanel overlays cannot become key/main windows and ignore mouse input.

@@ -1,8 +1,8 @@
 # 验证记录
 
-日期：2026-09-21。版本：0.2.0。目标：macOS Apple Silicon，第一代 Spotlight，蓝牙优先并支持 USB。
+日期：2026-09-21。版本：1.0-beta.2（早期记录始于 0.2.0）。目标：macOS Apple Silicon，第一代 Spotlight，蓝牙优先并支持 USB。
 
-**当前状态（更新于 2026-09-22）：** 第一代蓝牙 Spotlight 的聚光跟随、按住静止保持、松开隐藏，用户确认三项正常。蓝牙查询、电量、前进键和顶键通知采集成功；GUI 连接、断开、同进程重连和配置恢复已有实机证据。USB、连续放大和完整演示场景仍待验证。当前 48 项测试、Clippy 与格式检查通过。以下按阶段保留排查记录，早期失败不是当前状态。
+**当前状态（更新于 2026-11-15）：** 第一代蓝牙 Spotlight 的聚光跟随、按住静止保持、松开隐藏，用户确认三项正常。蓝牙查询、电量、前进键和顶键通知采集成功；GUI 连接、断开、同进程重连和配置恢复已有实机证据。USB、连续放大和完整演示场景仍待验证。当前 66 项测试、Clippy 与格式检查通过；课堂倒计时的代码与自动测试已完成，实机与界面验收尚未执行（见文末 2026-11-15 一节）。以下按阶段保留排查记录，早期失败不是当前状态。
 
 ## 2026-09-22 蓝牙实机进展
 
@@ -142,4 +142,55 @@ macOS 27.0（26A428），Apple Silicon，Rust 1.98.1。hidapi 2.6.7，objc2 0.6.
 4. 连接 USB 接收器，重复查询、按住/移动/静止/松开及效果验收；蓝牙聚光核心动作已通过。
 5. 实测断连、重连和睡眠恢复，分别检查整个显示器共享和单窗口共享。
 
-当前蓝牙聚光已完成真实按住/静止/松开联动验收。震动尚未实现，USB、全屏/多屏、物理断连/睡眠恢复未验收。ScreenCaptureKit 路径虽已实现，但本轮放大没有拿到画面，原因仍需进一步排查。请将本版本视为设备集成的开发预览。
+当前蓝牙聚光已完成真实按住/静止/松开联动验收。USB、全屏/多屏、物理断连/睡眠恢复未验收。ScreenCaptureKit 路径虽已实现，但本轮放大没有拿到画面，原因仍需进一步排查。请将本版本视为设备集成的开发预览。
+
+## 2026-11-15 课堂倒计时（自动测试证据）
+
+设计与验收计划见 [COUNTDOWN.zh-CN.md](COUNTDOWN.zh-CN.md)。代码已按计划步骤 0–4 中可离线完成的部分实现；三类证据的状态不同，不能互相替代：
+
+| 证据类别 | 状态 | 依据 |
+|---|---|---|
+| 自动测试 | 通过 | 66 项：lib 22、bin 6、controls 22、countdown 9、protocol 7 |
+| 格式与静态检查 | 通过 | `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings` |
+| 启动冒烟与打包 | 通过 | `sh scripts/bundle.sh`、`codesign --verify --deep --strict`、`plutil -lint` 通过；release 构建 `demo spotlight 3` 正常退出，帧间隔 p50 16.7 ms，每帧工作 `work_ms` p50 0.01–0.02 ms、p95 0.02–0.08 ms |
+| 阶段 0 实机验证（7.1，V1–V8） | **未执行** | 需要第一代蓝牙设备与放映软件；`docs/qa/bluetooth-page-keys.hex` 尚未采集 |
+| 无设备界面验收（7.3，N1–N6） | **未执行** | 需要人工观察屏幕窗口与点击穿透 |
+| 实机验收（7.4，D1–D10） | **未执行** | 需要设备、应用运行和放映软件 |
+
+实现内容与对应测试：
+
+| 位置 | 内容 | 测试 |
+|---|---|---|
+| `src/countdown.rs` | 状态机；时间全部由调用方传入 | T1–T9，`tests/countdown.rs` |
+| `src/settings.rs` | `HoldAction::Countdown`、`countdown_minutes`（旧文件取 5，越界取 1 或 99） | T10–T12，文件内单元测试 |
+| `src/controls.rs` | `NEXT_SHORT`/`BACK_SHORT`；`lease_controls` 同时接管两个短按键，任一个被拒绝时恢复已接管的那个 | T13–T15，`tests/controls.rs` |
+| `src/macos/remote.rs` | `Command::PageKeys`、`Event::PageKeys(PageKeysOutcome, …)`、`Gesture::NextShort`/`BackShort`、启动时恢复遗留短按键接管 | T16，文件内单元测试 |
+| `src/macos/countdown.rs` | 每个显示器一个倒计时窗口、提示文案与状态机接线 | `setup_hint_follows_takeover_state_and_last_ten_seconds_turn_red`，文件内单元测试 |
+| `src/macos/mod.rs` | 菜单项“课堂倒计时…”、`⌃⌥⌘H` 取消（`Esc` 不误取消倒计时） | 编译、离屏渲染与启动冒烟 |
+| `src/main.rs`、`src/diagnostics.rs` | `watch-page-keys`；`recover-controls-default` 增加 `00d9`/`00db` | 命令行参数解析测试 |
+
+关键假设 A3（`00d9`/`00db` 可被临时接管，且接管期间设备不再发送方向键）仍只有推断依据：先前的只读查询显示这两个键的转发标志随 Logi Options+ 的运行状态变化，但没有接管后的实机报文。计划第 6 节的决策点尚未通过：V1、V2、V6 任一失败时，应停止使用本实现，改用计划第 9 节的预设值循环，并撤销 `src/controls.rs` 的短按键接管、`src/macos/remote.rs` 的 `PageKeys` 命令和步骤 3 的改动。
+
+阶段 0 的命令顺序：
+
+```sh
+cargo run -- inspect 4
+cargo run -- watch-page-keys 4 60
+cargo run -- recover-controls-default 4
+```
+
+把 `watch-page-keys` 的原始报文保存为 `docs/qa/bluetooth-page-keys.hex`，并把 V1–V8 的结论补入本节。实机验收完成后，再把 7.3、7.4 的结果逐项填入，并区分通过、失败与未执行。
+
+### 2026-11-15 复审后修复（缺陷 1、2，问题 3、4）
+
+复审提出两个会使 D9 失败的缺陷、两个中等问题以及 `Escape` 误取消倒计时的边界问题；本次逐项修复，并将倒计时窗口与主线程接线拆分为 `src/macos/countdown.rs`，补齐单元测试。自动测试 66 项通过，Clippy 与格式检查通过；实机与界面验收仍未执行。
+
+| 编号 | 原因 | 修复 | 证据 |
+|---|---|---|---|
+| 缺陷 1：一次倒计时设定后崩溃恢复记录被覆盖 | `Event::Connected` 只把原值写入文件，内存列表仍为空；短按键接管时用"内存 + 两个短按键"重写文件，顶键和手势键记录丢失，重启后被判为他人接管 | 设备线程改为发送完整记录（`start_record`：未解决的遗留项 + 本次接管的全部按键），主线程把它同时存进内存；短按键事件只替换 `00d9`/`00db` 两项（`merge_record`），其他条目永不丢失 | `the_start_record_keeps_earlier_entries_and_this_sessions_leases`、`the_page_key_record_covers_only_page_keys_and_keeps_leftovers` |
+| 缺陷 2：强制结束后重启，短按键不自动恢复 | 遗留短按键只在下一次进入设定时才被接回 | 连接时用 `restore_leftovers` 立即接回并恢复，成功的条目从记录中删除；未成功的仍留在记录里，`recover-controls-default` 仍是手动兜底 | `a_leftover_short_key_record_is_restored_at_start_and_leaves_the_record` |
+| 问题 3：设定窗口先显示"无法用翻页键调整" | 接管等待期间被当成失败 | 新增 `AdjustHint::{Pending, Available, Unavailable}`：等待期间只显示"3 秒后开始" | `setup_hint_follows_takeover_state_and_last_ten_seconds_turn_red`，另需界面验收（N1）确认 |
+| 问题 4：无法测量接管耗时 | 时间戳从接管完成后才开始 | `watch-page-keys` 在第一次事务前开始计时，输出 `TAKEOVER ms=` 和 `RELEASE ms=` | 需实机 V7 记录 |
+| 问题 5：黑屏或方框停留时按 `Esc` 会顺带取消课堂倒计时 | `hotkey_action` 对 `EMERGENCY_HIDE` 和 `ESCAPE` 均调用了 `cancel_countdown()`，而 `Escape` 仅在画面特效停留时注册 | 仅在 `action == hotkey::EMERGENCY_HIDE`（`⌃⌥⌘H`）时调用 `cancel_countdown()`；`Esc` 只清除停留画面特效 | 代码审查与编译检查通过 |
+
+风险 5（长按后仍按住的键是否被固件再报一次短按）仍未验证，需要在 V4 中专门观察：若会重复，进入设定时会立即加减 1 分钟。

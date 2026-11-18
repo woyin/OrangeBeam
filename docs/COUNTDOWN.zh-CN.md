@@ -85,7 +85,7 @@ A3 是推断，不是实测结论。依据：`docs/VALIDATION.md` 记录 Logi Op
 | `src/macos/countdown.rs`（新） | 倒计时窗口、提示文案与状态机接线 | 主线程 |
 | `src/macos/mod.rs` | 菜单项、快捷键与生命周期接入 | 主线程 |
 | `src/macos/panel.rs` | 无新增控件 | 下拉项由 `HoldAction::ALL` 自动生成 |
-| `src/main.rs` | 诊断命令 `watch-page-keys`；扩展 `recover-controls-default` | 阶段 0 和故障恢复使用 |
+| `src/main.rs`、`src/diagnostics.rs` | 诊断命令 `watch-page-keys`；扩展 `recover-controls-default` | 阶段 0 和故障恢复使用 |
 
 ### 4.2 状态机（`src/countdown.rs`）
 
@@ -143,7 +143,7 @@ enum Event { ..., PageKeys(Vec<(u16, Reporting)>) }  // 当前由本会话接管
 - 设定或运行期间由常驻定时器驱动刷新，仅在文字或状态变化时更新控件；空闲时不增加任何周期性工作。
 - 遥控器在设定期间断连：设备线程退出时按现有流程恢复或记录按键；状态机不受影响，3 秒后按当前值开始。
 
-### 4.5 诊断与恢复命令（`src/main.rs`）
+### 4.5 诊断与恢复命令（`src/main.rs`、`src/diagnostics.rs`）
 
 - `watch-page-keys DEVICE [SECONDS] [INDEX]`：临时接管 `00d9`、`00db`，输出解码后的按下和松开事件，同时输出期间收到的键盘报文（report ID `01`），结束时恢复并校验。结构与现有的 `watch-controls` 相同。
 - `recover-controls-default`：把 `00d9`、`00db` 加入可恢复的按键列表，接受条件不变（原值为 `0000` 且映射到自身）。
