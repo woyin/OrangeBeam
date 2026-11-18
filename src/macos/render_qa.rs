@@ -96,7 +96,7 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
         let layer = bitmap()?;
         context(&layer)?;
-        view.draw(sel!(drawRect:), bounds);
+        view.drawRect(bounds);
         let corner_alpha = layer
             .colorAtX_y(10, 10)
             .ok_or("Missing corner pixel")?
@@ -180,7 +180,7 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
         let partial = bitmap()?;
         context(&partial)?;
-        view.draw(sel!(drawRect:), bounds);
+        view.drawRect(bounds);
         let before = data.look();
         change(data);
         let Some(Some(dirty)) = repaint_region(before, data.look(), false) else {
@@ -188,11 +188,11 @@ pub fn run(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         };
         NSGraphicsContext::saveGraphicsState_class();
         NSRectClip(dirty);
-        view.draw(sel!(drawRect:), dirty);
+        view.drawRect(dirty);
         NSGraphicsContext::restoreGraphicsState_class();
         let full = bitmap()?;
         context(&full)?;
-        view.draw(sel!(drawRect:), bounds);
+        view.drawRect(bounds);
         let bytes = |rep: &NSBitmapImageRep| {
             let len = (rep.bytesPerRow() * rep.pixelsHigh()) as usize;
             // SAFETY: the rep owns a contiguous buffer of bytesPerRow * height.
