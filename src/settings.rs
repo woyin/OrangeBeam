@@ -1,5 +1,6 @@
 //! User settings for remote gestures and presentation timers.
 //! Platform-independent; the app stores them as a small key=value file.
+use crate::countdown::{clamp_minutes, DEFAULT_MINUTES};
 use crate::presentation::{clamp_radius, Effect, DEFAULT_RADIUS};
 use crate::update::UpdateCheck;
 
@@ -77,14 +78,16 @@ pub enum HoldAction {
     PlayFromCurrent,
     BlackScreen,
     EndShow,
+    Countdown,
 }
 
 impl HoldAction {
-    pub const ALL: [HoldAction; 4] = [
+    pub const ALL: [HoldAction; 5] = [
         HoldAction::None,
         HoldAction::PlayFromCurrent,
         HoldAction::BlackScreen,
         HoldAction::EndShow,
+        HoldAction::Countdown,
     ];
 
     pub fn label(self) -> &'static str {
@@ -93,6 +96,7 @@ impl HoldAction {
             HoldAction::PlayFromCurrent => "从当前页播放",
             HoldAction::BlackScreen => "屏幕变黑 / 恢复",
             HoldAction::EndShow => "结束放映",
+            HoldAction::Countdown => "课堂倒计时",
         }
     }
 
@@ -102,6 +106,7 @@ impl HoldAction {
             HoldAction::PlayFromCurrent => "play-from-current",
             HoldAction::BlackScreen => "black-screen",
             HoldAction::EndShow => "end-show",
+            HoldAction::Countdown => "countdown",
         }
     }
 
@@ -123,6 +128,8 @@ pub struct Settings {
     pub shade: f64,
     pub zoom: f64,
     pub screen_reminder: ScreenReminder,
+    /// Minutes offered next time the countdown is set up.
+    pub countdown_minutes: u32,
     pub update_check: UpdateCheck,
     /// Unix seconds of the last successful update check.
     pub last_update_check: Option<u64>,
@@ -139,6 +146,7 @@ impl Default for Settings {
             shade: DEFAULT_SHADE,
             zoom: 2.0,
             screen_reminder: ScreenReminder::OnVibrationFailure,
+            countdown_minutes: DEFAULT_MINUTES,
             update_check: UpdateCheck::Weekly,
             last_update_check: None,
         }
@@ -199,6 +207,11 @@ impl Settings {
                         settings.screen_reminder = mode;
                     }
                 }
+                "countdown_minutes" => {
+                    if let Ok(minutes) = value.parse::<u32>() {
+                        settings.countdown_minutes = clamp_minutes(minutes);
+                    }
+                }
                 "shade" => {
                     if let Ok(shade) = value.parse::<f64>() {
                         settings.shade = clamp_shade(shade);
@@ -241,11 +254,12 @@ impl Settings {
             .map(|t| t.map(|m| m.to_string()).unwrap_or_default())
             .collect();
         format!(
-            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\nradius={}\nshade={:.2}\nzoom={}\nscreen-reminder={}\nupdate-check={}\nlast-update-check={}\n",
+            "cycle={}\nnext-hold={}\nback-hold={}\ntimers={}\ncountdown_minutes={}\nradius={}\nshade={:.2}\nzoom={}\nscreen-reminder={}\nupdate-check={}\nlast-update-check={}\n",
             cycle.join(","),
             self.next_hold.key(),
             self.back_hold.key(),
             timers.join(","),
+            self.countdown_minutes,
             self.radius.round(),
             self.shade,
             self.zoom,
@@ -337,6 +351,33 @@ mod tests {
         assert_eq!(s.next_hold, HoldAction::PlayFromCurrent);
         assert_eq!(s.back_hold, HoldAction::BlackScreen);
         assert_eq!(s.timers, [None; 3]);
+        assert_eq!(s.countdown_minutes, 5);
+    }
+
+    #[test]
+    fn countdown_action_and_minutes_round_trip() {
+        let s = Settings {
+            next_hold: HoldAction::Countdown,
+            countdown_minutes: 25,
+            ..Settings::default()
+        };
+        assert_eq!(Settings::parse(&s.serialize()), s);
+        assert!(s.serialize().contains("next-hold=countdown"));
+        // An older file without the key keeps the default.
+        assert_eq!(Settings::parse("radius=200\n").countdown_minutes, 5);
+        // Out-of-range values take the nearest boundary; junk keeps the default.
+        assert_eq!(
+            Settings::parse("countdown_minutes=0\n").countdown_minutes,
+            1
+        );
+        assert_eq!(
+            Settings::parse("countdown_minutes=500\n").countdown_minutes,
+            99
+        );
+        assert_eq!(
+            Settings::parse("countdown_minutes=x\n").countdown_minutes,
+            5
+        );
     }
 
     #[test]
@@ -350,6 +391,7 @@ mod tests {
             shade: 0.45,
             zoom: 3.0,
             screen_reminder: ScreenReminder::Always,
+            countdown_minutes: 12,
             update_check: UpdateCheck::Monthly,
             last_update_check: Some(1_790_000_000),
         };

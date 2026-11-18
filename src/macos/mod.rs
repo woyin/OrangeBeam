@@ -1,5 +1,6 @@
 //! Native AppKit shell. All window and drawing work stays on the main thread.
 mod capture;
+mod countdown;
 mod cursor;
 mod hotkey;
 pub mod input_access;
@@ -9,6 +10,7 @@ pub mod render_qa;
 mod update;
 use block2::RcBlock;
 use capture::Capture;
+use countdown::{CountdownWindow, PageKeysState};
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
@@ -19,7 +21,10 @@ use objc2_core_graphics::{
     CGRequestPostEventAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_foundation::*;
-use orange_beam::controls::{format_unrestored, parse_unrestored, Reporting};
+use orange_beam::controls::{
+    format_unrestored, merge_record, parse_unrestored, Reporting, SHORT_PAGE_KEYS,
+};
+use orange_beam::countdown::Countdown;
 use orange_beam::presentation::{BoxView, Effect, Point, Presentation, Rect};
 use orange_beam::settings::{
     parse_minutes, HoldAction, PresentationTimer, ScreenReminder, Settings, EFFECTS,
@@ -640,6 +645,9 @@ struct AppData {
     toast: RefCell<Option<(Retained<OverlayPanel>, Retained<NSTextField>)>>,
     toast_until: Cell<f64>,
     unrestored: RefCell<remote::Unrestored>,
+    countdown: RefCell<Countdown>,
+    countdown_windows: RefCell<Vec<CountdownWindow>>,
+    page_keys: Cell<PageKeysState>,
 }
 
 define_class!(
@@ -687,6 +695,7 @@ define_class!(
             self.ivars().hotkeys.replace(None);
             self.ivars().capture.stop();
             for overlay in self.ivars().overlays.borrow().iter() { overlay.retire(); }
+            for window in self.ivars().countdown_windows.borrow().iter() { window.retire(); }
             let _ = self.stop_remote(); // errors are logged inside
         }
     }
@@ -759,7 +768,8 @@ define_class!(
         }
         #[unsafe(method(holdChanged:))]
         fn hold_changed(&self, sender: &NSPopUpButton) {
-            let action = HoldAction::ALL[sender.indexOfSelectedItem().clamp(0, 3) as usize];
+            let actions = HoldAction::ALL.len() as isize - 1;
+            let action = HoldAction::ALL[sender.indexOfSelectedItem().clamp(0, actions) as usize];
             {
                 let mut settings = self.ivars().settings.borrow_mut();
                 if sender.tag() == 0 { settings.next_hold = action; } else { settings.back_hold = action; }
@@ -789,6 +799,8 @@ define_class!(
         }
         #[unsafe(method(toggleTimer:))]
         fn toggle_timer(&self, _sender: Option<&AnyObject>) { self.toggle_talk_timer(); }
+        #[unsafe(method(toggleCountdown:))]
+        fn toggle_countdown_item(&self, _sender: Option<&AnyObject>) { self.toggle_countdown(); }
     }
 );
 
@@ -875,17 +887,41 @@ impl Delegate {
             return;
         }
         match event {
-            remote::Event::Connected(transport, warning, leased) => {
-                // Record what a crash would leave behind; normal stop rewrites it.
-                let mut pending = self.ivars().unrestored.borrow().clone();
-                pending.retain(|(cid, _)| !leased.iter().any(|(c, _)| c == cid));
-                pending.extend(leased);
-                Self::save_unrestored(&pending);
+            remote::Event::Connected(transport, warning, record) => {
+                // The worker sends the complete record, including leftover
+                // entries it could not resolve. Keep it in memory as well: the
+                // page-key takeover appends to this list, so an in-memory copy
+                // that lacked the leases would drop their originals from the
+                // file and break crash recovery.
+                Self::save_unrestored(&record);
+                *self.ivars().unrestored.borrow_mut() = record;
                 self.set_remote_status(RemoteStatus::Connected(transport));
                 self.set_message(&format!(
                     "按住顶键显示特效，双击顶键切换。{}",
                     warning.unwrap_or_default()
                 ));
+                // A setup that began without a remote may take the keys over now.
+                if self.ivars().page_keys.get() == PageKeysState::Refused
+                    && self.ivars().countdown.borrow().wants_page_keys()
+                {
+                    self.ivars().page_keys.set(PageKeysState::Native);
+                }
+            }
+            remote::Event::PageKeys(outcome, page_keys) => {
+                // Replace only the short page-key entries, so a forced quit
+                // during setup is recoverable and no other control's original
+                // can be dropped. A normal stop rewrites the whole record.
+                {
+                    let mut record = self.ivars().unrestored.borrow_mut();
+                    merge_record(&mut record, &SHORT_PAGE_KEYS, &page_keys);
+                    Self::save_unrestored(&record);
+                }
+                self.ivars().page_keys.set(match outcome {
+                    remote::PageKeysOutcome::Diverted => PageKeysState::Diverted,
+                    remote::PageKeysOutcome::Refused => PageKeysState::Refused,
+                    remote::PageKeysOutcome::Released => PageKeysState::Native,
+                });
+                self.tick();
             }
             remote::Event::Gesture(gesture) => {
                 eprintln!("REMOTE GESTURE {gesture:?}");
@@ -893,12 +929,18 @@ impl Delegate {
                     remote::Gesture::DoubleClick => self.cycle_effect(),
                     remote::Gesture::NextHold => {
                         let action = self.ivars().settings.borrow().next_hold;
-                        self.perform_hold(action);
+                        if self.hold_allowed(action) {
+                            self.perform_hold(action);
+                        }
                     }
                     remote::Gesture::BackHold => {
                         let action = self.ivars().settings.borrow().back_hold;
-                        self.perform_hold(action);
+                        if self.hold_allowed(action) {
+                            self.perform_hold(action);
+                        }
                     }
+                    remote::Gesture::NextShort => self.adjust_countdown(1),
+                    remote::Gesture::BackShort => self.adjust_countdown(-1),
                 }
             }
             remote::Event::Message(text) => self.set_message(&text),
@@ -952,6 +994,8 @@ impl Delegate {
                 );
             }
             remote::Event::Stopped => {
+                // The worker restored every lease it still held.
+                self.ivars().page_keys.set(PageKeysState::Native);
                 // Final notification is queued after restoration. Joining also
                 // completes destruction of the worker's main-bound callback.
                 let result = self.stop_remote();
@@ -1147,6 +1191,7 @@ impl Delegate {
     fn perform_hold(&self, action: HoldAction) {
         match action {
             HoldAction::None => {}
+            HoldAction::Countdown => self.toggle_countdown(),
             HoldAction::BlackScreen => {
                 let black = {
                     let mut state = self.ivars().presentation.borrow_mut();
@@ -1380,6 +1425,9 @@ impl Delegate {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         let timer = self.item(&menu, "开始计时", sel!(toggleTimer:), "");
         self.ivars().timer_item.replace(Some(timer));
+        // Same behaviour as a long press configured as "课堂倒计时": this entry
+        // also works without a remote, which is how the feature is tested.
+        self.item(&menu, "课堂倒计时…", sel!(toggleCountdown:), "");
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         self.item(&menu, "控制面板…", sel!(showControls:), ",");
         let update = self.item(&menu, "检查更新…", sel!(checkUpdates:), "");
@@ -1540,6 +1588,17 @@ impl Delegate {
             .iter()
             .map(|screen| Overlay::new(self.mtm(), &screen, &state))
             .collect();
+        drop(overlays);
+        // Countdown panels follow the same display set; a rebuilt panel starts
+        // with no applied layout, so the next frame draws it again.
+        let mut windows = self.ivars().countdown_windows.borrow_mut();
+        for window in windows.iter() {
+            window.retire();
+        }
+        *windows = screens
+            .iter()
+            .map(|screen| CountdownWindow::new(self.mtm(), &screen))
+            .collect();
     }
     fn tick(&self) {
         let now = self.now();
@@ -1591,6 +1650,7 @@ impl Delegate {
         }
         self.check_timers();
         self.update_timer_ui();
+        self.update_countdown(now);
         if let Some((panel, _)) = self.ivars().toast.borrow().as_ref() {
             if panel.isVisible() && now >= self.ivars().toast_until.get() {
                 panel.orderOut(None);
@@ -1675,6 +1735,9 @@ unsafe fn hotkey_action(target: *mut std::ffi::c_void, action: u32) {
         return;
     }
     delegate.ivars().presentation.borrow_mut().hide();
+    if action == hotkey::EMERGENCY_HIDE {
+        delegate.cancel_countdown();
+    }
     delegate.tick();
     delegate.set_message("效果已隐藏。");
 }
@@ -1761,6 +1824,9 @@ pub fn run(demo: Option<(Effect, f64)>) -> Result<(), Box<dyn std::error::Error>
         toast: RefCell::new(None),
         toast_until: Cell::new(0.0),
         unrestored: RefCell::new(Delegate::load_unrestored()),
+        countdown: RefCell::new(Countdown::default()),
+        countdown_windows: RefCell::new(Vec::new()),
+        page_keys: Cell::new(PageKeysState::Native),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));

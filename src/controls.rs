@@ -4,11 +4,22 @@ use crate::Report;
 use std::error::Error;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
+/// Controls whose original state a crashed session recorded but did not restore.
+pub type Unrestored = Vec<(u16, Reporting)>;
 pub const TOP_HOLD: u16 = 0x00d8;
 /// Firmware-detected top-button double click ("Switch Highlight").
 pub const SWITCH_HIGHLIGHT: u16 = 0x00df;
 pub const NEXT_HOLD: u16 = 0x00da;
 pub const BACK_HOLD: u16 = 0x00dc;
+/// Short press of the page-turn keys. Normally the device sends arrow keys
+/// instead; diverting these two only while the classroom countdown is set up
+/// turns them into the minute adjustment.
+pub const NEXT_SHORT: u16 = 0x00d9;
+pub const BACK_SHORT: u16 = 0x00db;
+/// The short page keys, in the order the countdown diverts them. They are
+/// always taken over together: one key turning slides while the other changed
+/// minutes would be worse than losing the adjustment.
+pub const SHORT_PAGE_KEYS: [u16; 2] = [NEXT_SHORT, BACK_SHORT];
 
 /// Bluetooth requests on the tested first-generation unit use slot 1, while
 /// unsolicited notifications use the directly connected device address 0xff.
@@ -297,6 +308,117 @@ impl<T: FnMut(&Report) -> Result<Report>> TemporaryTopButton<T> {
     pub fn finish(mut self) -> Result<()> {
         self.restore()
     }
+}
+
+/// Replaces the record entries for `cids` with `entries`, keeping every
+/// other entry. Used when a worker reports a subset of the record: entries the
+/// caller cannot account for must never be dropped, or the control would look
+/// like another client's on the next start.
+pub fn merge_record(record: &mut Unrestored, cids: &[u16], entries: &[(u16, Reporting)]) {
+    record.retain(|(cid, _)| !cids.contains(cid));
+    record.extend(entries.iter().copied());
+}
+
+/// The crash-recovery record after a session starts: every record this
+/// session did not resolve, plus every control it now diverts.
+///
+/// Callers must persist the result and keep it in memory: a later record
+/// update replaces whole records, so an in-memory copy that lacks the leases
+/// of this session would drop their originals from the file.
+pub fn start_record(unresolved: &[(u16, Reporting)], leased: &[(u16, Reporting)]) -> Unrestored {
+    let mut items: Unrestored = unresolved
+        .iter()
+        .copied()
+        .filter(|(cid, _)| !leased.iter().any(|(ours, _)| ours == cid))
+        .collect();
+    items.extend(leased.iter().copied());
+    items
+}
+
+/// Adopts and immediately restores this process's own leftover diversion of
+/// each control in `cids`, and returns the controls now verified as restored.
+///
+/// Only a record from an earlier session that the device still shows exactly
+/// is touched; anything else stays untouched and stays in the record, so
+/// `recover-controls-default` remains the explicit manual route.
+pub fn restore_leftovers<T>(
+    transport: T,
+    index: u8,
+    feature: u8,
+    cids: &[u16],
+    leftover: impl Fn(u16) -> Option<Reporting>,
+) -> Vec<u16>
+where
+    T: FnMut(&Report) -> Result<Report> + Clone,
+{
+    let mut restored = Vec::new();
+    for &cid in cids {
+        let Some(previous) = leftover(cid) else {
+            continue;
+        };
+        match TemporaryTopButton::start_or_adopt(
+            transport.clone(),
+            index,
+            feature,
+            cid,
+            Some(previous),
+        ) {
+            Ok(lease) => match lease.finish() {
+                Ok(()) => {
+                    eprintln!("RESTORED and verified leftover control {cid:04x}");
+                    restored.push(cid);
+                }
+                Err(error) => eprintln!("LEFTOVER control {cid:04x} restore failed: {error}"),
+            },
+            Err(error) => eprintln!("LEFTOVER control {cid:04x} not adopted: {error}"),
+        }
+    }
+    restored
+}
+
+/// Diverts every control in `cids` through one transport. A refusal restores
+/// the controls this call already diverted, so a half-diverted pair never
+/// reaches the caller: either every key answers, or the device keeps its own.
+///
+/// The transport must be `Clone` because each lease owns its own copy; a
+/// closure that only borrows the device satisfies this.
+pub fn lease_controls<T>(
+    transport: T,
+    index: u8,
+    feature: u8,
+    cids: &[u16],
+    leftover: impl Fn(u16) -> Option<Reporting>,
+) -> Result<Vec<TemporaryTopButton<T>>>
+where
+    T: FnMut(&Report) -> Result<Report> + Clone,
+{
+    let mut leases = Vec::new();
+    for &cid in cids {
+        match TemporaryTopButton::start_or_adopt(
+            transport.clone(),
+            index,
+            feature,
+            cid,
+            leftover(cid),
+        ) {
+            Ok(lease) => leases.push(lease),
+            Err(error) => {
+                let mut restore_errors = Vec::new();
+                for lease in leases.drain(..) {
+                    let held = lease.control();
+                    if let Err(restore) = lease.finish() {
+                        restore_errors.push(format!("{held:04x}: {restore}"));
+                    }
+                }
+                return Err(if restore_errors.is_empty() {
+                    error
+                } else {
+                    format!("{error}; RESTORE FAILED: {}", restore_errors.join("; ")).into()
+                });
+            }
+        }
+    }
+    Ok(leases)
 }
 
 impl<T: FnMut(&Report) -> Result<Report>> Drop for TemporaryTopButton<T> {

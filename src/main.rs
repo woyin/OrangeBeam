@@ -4,8 +4,8 @@ mod macos;
 #[cfg(unix)]
 mod stop_signals;
 use orange_beam::controls::{
-    active_controls, notification_address, top_button_state, TemporaryTopButton, BACK_HOLD,
-    NEXT_HOLD, SWITCH_HIGHLIGHT, TOP_HOLD,
+    active_controls, lease_controls, notification_address, top_button_state, TemporaryTopButton,
+    BACK_HOLD, BACK_SHORT, NEXT_HOLD, NEXT_SHORT, SWITCH_HIGHLIGHT, TOP_HOLD,
 };
 use orange_beam::presentation::Effect;
 use orange_beam::{
@@ -30,6 +30,7 @@ USAGE:
   orange-beam capture DEVICE [SECONDS]
   orange-beam watch-top DEVICE [SECONDS] [INDEX]
   orange-beam watch-controls DEVICE [SECONDS] [INDEX]
+  orange-beam watch-page-keys DEVICE [SECONDS] [INDEX]
   orange-beam vibrate DEVICE [INTENSITY] [LENGTH] [INDEX]
   orange-beam recover-top-default DEVICE [INDEX]
   orange-beam recover-controls-default DEVICE [INDEX]
@@ -48,13 +49,20 @@ Raw XY, persistent settings, mappings and other controls are not modified.
 watch-controls: temporarily divert top hold (00d8), double click (00df), next
 hold (00da) and back hold (00dc); log decoded events for SECONDS (default 60),
 then restore and verify each control. Short presses (00d9/00db) stay native.
+watch-page-keys: temporarily divert only the short page keys (00d9/00db), log
+decoded press/release events and any keyboard report (ID 01) for SECONDS
+(default 60), then restore and verify. A KEYBOARD line means the device still
+sends arrow keys, so a slide would also turn. Nothing else is diverted.
+TAKEOVER ms= and RELEASE ms= report how long each side took; a long press
+followed at once by a short press may still turn one slide above ~300 ms.
 vibrate: send one PRESENTER_CONTROL vibration (INTENSITY 0..255, default 128;
 LENGTH 0..10, default 0). No device settings are changed.
 recover-top-default: recover an interrupted session only when its saved original
 top flags were 0000, mapping 00d8, and other device-control apps are stopped.
 On macOS, unlock the desktop and leave password fields before diagnostics.
-recover-controls-default: the same explicit recovery for 00d8, 00df, 00da and
-00dc, each accepted only if its documented original was 0000 mapped to itself.
+recover-controls-default: the same explicit recovery for 00d8, 00df, 00da,
+00dc, 00d9 and 00db, each accepted only if its documented original was 0000
+mapped to itself.
 Secure Input blocks diagnostics; capture stops if it becomes active.
 Interface numbers can change after reconnecting. Run list again first.
 For probe choose a vendor usage page (usually ff00); for capture also try
@@ -103,6 +111,11 @@ enum Command {
         seconds: u64,
         index: u8,
     },
+    WatchPageKeys {
+        device: usize,
+        seconds: u64,
+        index: u8,
+    },
     Vibrate {
         device: usize,
         intensity: u8,
@@ -121,6 +134,7 @@ impl Command {
             | Command::Capture { device, .. }
             | Command::WatchTop { device, .. }
             | Command::WatchControls { device, .. }
+            | Command::WatchPageKeys { device, .. }
             | Command::Vibrate { device, .. }
             | Command::RecoverTop { device, .. }
             | Command::RecoverControls { device, .. } => Some(*device),
@@ -140,6 +154,7 @@ impl Command {
             | Command::Inspect { .. }
             | Command::WatchTop { .. }
             | Command::WatchControls { .. }
+            | Command::WatchPageKeys { .. }
             | Command::Vibrate { .. }
             | Command::RecoverTop { .. }
             | Command::RecoverControls { .. } => true,
@@ -230,7 +245,7 @@ fn parse_args(args: &[String]) -> Result<Command> {
                 index,
             })
         }
-        Some("capture" | "watch-top" | "watch-controls")
+        Some("capture" | "watch-top" | "watch-controls" | "watch-page-keys")
             if (2..=if args[0] == "capture" { 3 } else { 4 }).contains(&args.len()) =>
         {
             let device = args[1].parse()?;
@@ -240,7 +255,7 @@ fn parse_args(args: &[String]) -> Result<Command> {
                 .transpose()?
                 .unwrap_or(match args[0].as_str() {
                     "watch-top" => 30,
-                    "watch-controls" => 60,
+                    "watch-controls" | "watch-page-keys" => 60,
                     _ => 15,
                 });
             if !(1..=300).contains(&seconds) {
@@ -255,19 +270,24 @@ fn parse_args(args: &[String]) -> Result<Command> {
                 if !(1..=6).contains(&index) {
                     return Err("INDEX must be 1..6".into());
                 }
-                Ok(if args[0] == "watch-top" {
-                    Command::WatchTop {
+                let command = match args[0].as_str() {
+                    "watch-top" => Command::WatchTop {
                         device,
                         seconds,
                         index,
-                    }
-                } else {
-                    Command::WatchControls {
+                    },
+                    "watch-controls" => Command::WatchControls {
                         device,
                         seconds,
                         index,
-                    }
-                })
+                    },
+                    _ => Command::WatchPageKeys {
+                        device,
+                        seconds,
+                        index,
+                    },
+                };
+                Ok(command)
             } else {
                 Ok(Command::Capture { device, seconds })
             }
@@ -621,6 +641,141 @@ fn watch_controls(_: &HidDevice, _: u8, _: u8, _: u64) -> Result<()> {
     Err("watch-controls currently requires Unix signal handling".into())
 }
 
+/// Diagnostic for the countdown takeover: diverts only the two short page keys,
+/// so a native page turn and a takeover notification are distinguishable. Every
+/// lease is restored and verified, as in watch-controls.
+#[cfg(unix)]
+fn watch_page_keys(
+    device: &HidDevice,
+    index: u8,
+    notification_index: u8,
+    seconds: u64,
+) -> Result<()> {
+    use std::io::Write;
+    let stop = stop_signals::StopSignals::install()?;
+    let feature =
+        resolve_feature(device, index, 0x1b04)?.ok_or("REPROG_CONTROLS_V4 is unavailable")?;
+    if stop.received() != 0 {
+        return Err("Stopped before configuring the page keys".into());
+    }
+    // V7 needs the takeover duration, so the clock starts before the first
+    // transaction rather than after the last one.
+    let takeover_started = Instant::now();
+    let mut leases = lease_controls(
+        |request: &Report| transact(device, request),
+        index,
+        feature,
+        &[NEXT_SHORT, BACK_SHORT],
+        |_| None,
+    )?;
+    let takeover_ms = takeover_started.elapsed().as_millis();
+    eprintln!("TAKEOVER ms={takeover_ms}");
+    for lease in &leases {
+        let original = lease.original();
+        eprintln!(
+            "DIVERTED {:04x} {} original_flags={:04x} original_mapping={:04x}",
+            lease.control(),
+            control_name(lease.control()),
+            original.flags,
+            original.mapped_to
+        );
+    }
+    let captured: Result<()> = (|| {
+        eprintln!("READY notifications={notification_index:02x} feature={feature:02x}. For {seconds}s: short-press next and back. A KEYBOARD line means the device still sends arrow keys. Ctrl-C ends early.");
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(seconds);
+        let mut buffer = [0; 64];
+        let mut held: Vec<u16> = Vec::new();
+        let mut reports = 0u64;
+        let stdout = std::io::stdout();
+        let mut output = stdout.lock();
+        while Instant::now() < deadline && stop.received() == 0 {
+            ensure_input_available()?;
+            let count = device.read_timeout(&mut buffer, 100)?;
+            if count == 0 {
+                continue;
+            }
+            ensure_input_available()?;
+            reports += 1;
+            let ms = start.elapsed().as_millis();
+            let data = &buffer[..count];
+            write!(output, "{ms:8}ms")?;
+            for byte in data {
+                write!(output, " {byte:02x}")?;
+            }
+            writeln!(output)?;
+            output.flush()?;
+            match data[0] {
+                // Keyboard page turn: the diversion did not suppress the arrow key.
+                0x01 => {
+                    let keys: Vec<_> = data[2.min(count)..]
+                        .iter()
+                        .filter(|k| **k != 0)
+                        .map(|k| match k {
+                            0x4f => "RightArrow".to_string(),
+                            0x50 => "LeftArrow".to_string(),
+                            other => format!("key-{other:02x}"),
+                        })
+                        .collect();
+                    eprintln!(
+                        "{ms:8}ms KEYBOARD {}",
+                        if keys.is_empty() {
+                            "released".into()
+                        } else {
+                            keys.join("+")
+                        }
+                    );
+                }
+                0x10 | 0x11 => {
+                    let Ok(report) = Report::parse(data) else {
+                        continue;
+                    };
+                    let Some(now) = active_controls(&report, notification_index, feature) else {
+                        eprintln!("{ms:8}ms HID++ other (device={:02x} feature={:02x} function={} swid={})", report.device(), report.feature(), report.function(), report.software_id());
+                        continue;
+                    };
+                    for cid in now.iter().filter(|c| !held.contains(c)) {
+                        eprintln!("{ms:8}ms PRESS   {cid:04x} {}", control_name(*cid));
+                    }
+                    for cid in held.iter().filter(|c| !now.contains(c)) {
+                        eprintln!("{ms:8}ms RELEASE {cid:04x} {}", control_name(*cid));
+                    }
+                    held = now;
+                }
+                other => eprintln!("{ms:8}ms REPORT id={other:02x} len={count}"),
+            }
+        }
+        eprintln!(
+            "Captured {reports} reports; signal={}. Restoring page keys.",
+            stop.received()
+        );
+        Ok(())
+    })();
+    let release_started = Instant::now();
+    let mut restore_errors = Vec::new();
+    while let Some(lease) = leases.pop() {
+        let cid = lease.control();
+        match lease.finish() {
+            Ok(()) => eprintln!("RESTORED and verified {cid:04x}"),
+            Err(error) => restore_errors.push(format!("{cid:04x}: {error}")),
+        }
+    }
+    eprintln!("RELEASE ms={}", release_started.elapsed().as_millis());
+    match (captured, restore_errors.is_empty()) {
+        (Ok(()), true) => Ok(()),
+        (Err(error), true) => Err(format!("{error}; page keys restored and verified").into()),
+        (Ok(()), false) => Err(format!("RESTORE FAILED: {}", restore_errors.join("; ")).into()),
+        (Err(error), false) => {
+            Err(format!("{error}; RESTORE FAILED: {}", restore_errors.join("; ")).into())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn watch_page_keys(_: &HidDevice, _: u8, _: u8, _: u64) -> Result<()> {
+    Err("watch-page-keys currently requires Unix signal handling".into())
+}
+
 /// PRESENTER_CONTROL (0x1a00) function 1 {length, 0xe8, intensity}, as used
 /// by Projecteur for the first-generation Spotlight. Not a configuration write.
 fn vibrate(device: &HidDevice, index: u8, intensity: u8, length: u8) -> Result<()> {
@@ -762,7 +917,7 @@ fn run() -> Result<()> {
         .ok_or("No such Spotlight interface. Connect the device and run list again.")?;
     if command.needs_vendor_interface() && info.usage_page() < 0xff00 {
         return Err(
-            "probe/inspect/watch-top/watch-controls/vibrate requires a vendor-defined HID interface; choose its DEVICE number from list"
+            "probe/inspect/watch-top/watch-controls/watch-page-keys/vibrate requires a vendor-defined HID interface; choose its DEVICE number from list"
                 .into(),
         );
     }
@@ -783,6 +938,12 @@ fn run() -> Result<()> {
             notification_address(matches!(info.bus_type(), hidapi::BusType::Bluetooth), index),
             seconds,
         ),
+        Command::WatchPageKeys { seconds, index, .. } => watch_page_keys(
+            &device,
+            index,
+            notification_address(matches!(info.bus_type(), hidapi::BusType::Bluetooth), index),
+            seconds,
+        ),
         Command::Vibrate {
             intensity,
             length,
@@ -793,7 +954,14 @@ fn run() -> Result<()> {
             let feature =
                 resolve_feature(&device, index, 0x1b04)?.ok_or("REPROG_CONTROLS_V4 unavailable")?;
             let mut failures = Vec::new();
-            for cid in [TOP_HOLD, SWITCH_HIGHLIGHT, NEXT_HOLD, BACK_HOLD] {
+            for cid in [
+                TOP_HOLD,
+                SWITCH_HIGHLIGHT,
+                NEXT_HOLD,
+                BACK_HOLD,
+                NEXT_SHORT,
+                BACK_SHORT,
+            ] {
                 match TemporaryTopButton::recover_default_control(
                     |r| transact(&device, r),
                     index,
@@ -857,6 +1025,10 @@ mod tests {
             vec!["watch-top", "4", "30", "1", "extra"],
             vec!["watch-controls", "4", "0"],
             vec!["watch-controls", "4", "60", "7"],
+            vec!["watch-page-keys", "4", "0"],
+            vec!["watch-page-keys", "4", "301"],
+            vec!["watch-page-keys", "4", "60", "7"],
+            vec!["watch-page-keys", "4", "60", "1", "extra"],
             vec!["vibrate", "4", "256"],
             vec!["vibrate", "4", "128", "11"],
             vec!["vibrate", "4", "128", "0", "0"],
@@ -890,6 +1062,14 @@ mod tests {
         assert_eq!(
             parse(&["watch-controls", "4"]).unwrap(),
             Command::WatchControls {
+                device: 4,
+                seconds: 60,
+                index: 1
+            }
+        );
+        assert_eq!(
+            parse(&["watch-page-keys", "4"]).unwrap(),
+            Command::WatchPageKeys {
                 device: 4,
                 seconds: 60,
                 index: 1

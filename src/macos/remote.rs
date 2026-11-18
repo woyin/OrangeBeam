@@ -3,8 +3,9 @@
 use hidapi::{BusType, DeviceInfo, HidApi};
 use objc2::MainThreadMarker;
 use orange_beam::controls::{
-    active_controls, notification_address, Reporting, TemporaryTopButton, BACK_HOLD, NEXT_HOLD,
-    SWITCH_HIGHLIGHT, TOP_HOLD,
+    active_controls, lease_controls, notification_address, restore_leftovers, start_record,
+    Reporting, TemporaryTopButton, BACK_HOLD, BACK_SHORT, NEXT_HOLD, NEXT_SHORT, SWITCH_HIGHLIGHT,
+    TOP_HOLD,
 };
 use orange_beam::{Report, SOFTWARE_ID};
 use std::sync::{
@@ -18,17 +19,25 @@ pub enum Gesture {
     DoubleClick,
     NextHold,
     BackHold,
+    /// Short press of a page key while the classroom countdown diverts them.
+    NextShort,
+    BackShort,
 }
 
 pub enum Event {
     /// Transport name, a warning when optional gestures are unavailable, and
-    /// every control now diverted with its original (persisted in case the
-    /// process dies before restoring them).
+    /// the complete crash-recovery record: every control this session now
+    /// diverts plus any leftover record it could not resolve, each with its
+    /// original state. The main thread keeps this as its in-memory copy, so a
+    /// later record update cannot drop another control's original.
     Connected(&'static str, Option<String>, Unrestored),
     Hold(bool),
     Gesture(Gesture),
     /// A native page-turn key (short next/back) was pressed on the remote.
     PageTurn,
+    /// What happened to the short page-turn keys, with the record entries they
+    /// still leave: the keys diverted now, or leftovers not yet resolved.
+    PageKeys(PageKeysOutcome, Unrestored),
     /// The vibration carrying this reminder text could not be delivered.
     VibrationFailed(String),
     Message(String),
@@ -40,11 +49,25 @@ pub enum Event {
 
 /// Controls this process diverted but could not restore (usually because the
 /// remote disconnected), keyed by CID with the original reporting state.
-pub type Unrestored = Vec<(u16, Reporting)>;
+pub use orange_beam::controls::Unrestored;
+
+/// Result of a page-key takeover or release. An empty record alone cannot
+/// distinguish "refused" from "released", and the setup hint differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKeysOutcome {
+    /// Diverted by this session; short presses adjust the minutes.
+    Diverted,
+    /// The device or another client refused; setup runs without adjustment.
+    Refused,
+    /// Released; the device sends arrow keys natively again.
+    Released,
+}
 
 enum Command {
     /// Reminder text travels with the request so a failure can show it.
     Vibrate(String),
+    /// Take over (true) or release (false) the short page-turn keys.
+    PageKeys(bool),
 }
 
 /// Intensity and length confirmed perceptible on the user's first-generation unit.
@@ -117,6 +140,12 @@ impl Remote {
         self.commands.send(Command::Vibrate(reminder)).is_ok()
     }
 
+    /// Queues the takeover (true) or release (false) of the short page-turn
+    /// keys; false when the worker has already exited.
+    pub fn page_keys(&self, divert: bool) -> bool {
+        self.commands.send(Command::PageKeys(divert)).is_ok()
+    }
+
     pub fn stop(&mut self) -> Outcome {
         self.stop.store(true, Ordering::Relaxed);
         match self.worker.take() {
@@ -157,6 +186,8 @@ impl<F: Fn(Event)> Buttons<'_, F> {
                 SWITCH_HIGHLIGHT => (self.notify)(Event::Gesture(Gesture::DoubleClick)),
                 NEXT_HOLD => (self.notify)(Event::Gesture(Gesture::NextHold)),
                 BACK_HOLD => (self.notify)(Event::Gesture(Gesture::BackHold)),
+                NEXT_SHORT => (self.notify)(Event::Gesture(Gesture::NextShort)),
+                BACK_SHORT => (self.notify)(Event::Gesture(Gesture::BackShort)),
                 _ => {}
             }
         }
@@ -164,6 +195,47 @@ impl<F: Fn(Event)> Buttons<'_, F> {
             (self.notify)(Event::Hold(false));
         }
         self.held = now;
+    }
+}
+
+/// The short page keys, in the order the takeover diverts them.
+const PAGE_KEYS: [u16; 2] = [NEXT_SHORT, BACK_SHORT];
+
+/// The crash-recovery entries that concern the short page keys right now:
+/// leftovers this session could not resolve, plus the keys it holds. The main
+/// thread replaces exactly these entries, so an entry it cannot account for is
+/// never dropped from the file.
+fn page_key_record(unrestored: &Unrestored, held: &[(u16, Reporting)]) -> Unrestored {
+    start_record(unrestored, held)
+        .into_iter()
+        .filter(|(cid, _)| PAGE_KEYS.contains(cid))
+        .collect()
+}
+
+/// Original state recorded by an earlier session whose restore failed.
+fn leftover_in(unrestored: &Unrestored, cid: u16) -> Option<Reporting> {
+    unrestored
+        .iter()
+        .find(|(control, _)| *control == cid)
+        .map(|(_, original)| *original)
+}
+
+/// Restores every lease and records the ones that failed, so a later session
+/// can recognise and finish its own leftover diversion.
+fn restore_leases<T: FnMut(&Report) -> orange_beam::controls::Result<Report>>(
+    leases: &mut Vec<TemporaryTopButton<T>>,
+    unrestored: &mut Unrestored,
+) {
+    for lease in leases.drain(..) {
+        let cid = lease.control();
+        let original = lease.original();
+        match lease.finish() {
+            Ok(()) => eprintln!("REMOTE RESTORED and verified {cid:04x}"),
+            Err(error) => {
+                eprintln!("REMOTE control {cid:04x} restore failed: {error}");
+                unrestored.push((cid, original));
+            }
+        }
     }
 }
 
@@ -195,13 +267,12 @@ fn run(
     // already owned by another client is left untouched and reported.
     // One Copy closure type for every lease, so they can share a list.
     let transport = |r: &Report| crate::transact(&device, r);
-    let leftover = |cid: u16| unrestored.iter().find(|(c, _)| *c == cid).map(|(_, r)| *r);
     let top = TemporaryTopButton::start_or_adopt(
         transport,
         index,
         feature,
         TOP_HOLD,
-        leftover(TOP_HOLD),
+        leftover_in(unrestored, TOP_HOLD),
     )?;
     let mut leased = vec![(TOP_HOLD, top.original())];
     let mut gestures = Vec::new();
@@ -214,7 +285,13 @@ fn run(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match TemporaryTopButton::start_or_adopt(transport, index, feature, cid, leftover(cid)) {
+        match TemporaryTopButton::start_or_adopt(
+            transport,
+            index,
+            feature,
+            cid,
+            leftover_in(unrestored, cid),
+        ) {
             Ok(lease) => {
                 leased.push((cid, lease.original()));
                 gestures.push(lease);
@@ -225,6 +302,13 @@ fn run(
             }
         }
     }
+    // Leftover diversions of the short page keys from an earlier session whose
+    // restore failed are restored now, not when a countdown is next set up:
+    // otherwise the page keys would keep ignoring presses after a restart.
+    let restored = restore_leftovers(transport, index, feature, &PAGE_KEYS, |cid| {
+        leftover_in(unrestored, cid)
+    });
+    unrestored.retain(|(cid, _)| !restored.contains(cid));
     // Every leased control is now owned (and will be restored) by this session.
     unrestored.retain(|(cid, _)| !leased.iter().any(|(c, _)| c == cid));
     let address = notification_address(bluetooth, index);
@@ -241,17 +325,28 @@ fn run(
             warning.unwrap_or_default()
         ));
     }
+    // The full record, so the main thread never has to rebuild it from parts.
     notify(Event::Connected(
         if bluetooth { "蓝牙" } else { "USB" },
         warning,
-        leased,
+        start_record(unrestored, &leased),
     ));
-    let mut buttons = Buttons {
+    // Behind a RefCell so the takeover below can clone one transport that
+    // keeps handing button notifications to the same edge detector.
+    let buttons = std::cell::RefCell::new(Buttons {
         address,
         feature,
         held: Vec::new(),
         notify,
+    });
+    let observing = |request: &Report| {
+        crate::transact_observing(&device, request, |report| {
+            buttons.borrow_mut().handle(report)
+        })
     };
+    // Short page keys diverted for the countdown; restored when setup ends,
+    // on disconnection and on every exit path below.
+    let mut page_keys = Vec::new();
     let captured: crate::Result<()> = (|| {
         let mut buffer = [0; 64];
         let mut paused = false;
@@ -261,6 +356,51 @@ fn run(
         while !stop.load(Ordering::Relaxed) {
             while let Ok(command) = inbox.try_recv() {
                 match command {
+                    Command::PageKeys(true) => {
+                        if page_keys.is_empty() {
+                            // Observing, so a top-button notification that
+                            // arrives mid-takeover is not lost.
+                            let leases =
+                                lease_controls(observing, index, feature, &PAGE_KEYS, |cid| {
+                                    leftover_in(unrestored, cid)
+                                });
+                            match leases {
+                                Ok(leases) => {
+                                    let held: Unrestored = leases
+                                        .iter()
+                                        .map(|lease| (lease.control(), lease.original()))
+                                        .collect();
+                                    // This session now owns these keys.
+                                    unrestored.retain(|(cid, _)| {
+                                        !held.iter().any(|(ours, _)| ours == cid)
+                                    });
+                                    page_keys = leases;
+                                    notify(Event::PageKeys(
+                                        PageKeysOutcome::Diverted,
+                                        page_key_record(unrestored, &held),
+                                    ));
+                                }
+                                Err(error) => {
+                                    // Setup still works; only adjustment is lost.
+                                    eprintln!("REMOTE page keys unavailable: {error}");
+                                    // Any leftover entry stays recorded.
+                                    notify(Event::PageKeys(
+                                        PageKeysOutcome::Refused,
+                                        page_key_record(unrestored, &[]),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Command::PageKeys(false) => {
+                        if !page_keys.is_empty() {
+                            restore_leases(&mut page_keys, unrestored);
+                        }
+                        notify(Event::PageKeys(
+                            PageKeysOutcome::Released,
+                            page_key_record(unrestored, &[]),
+                        ));
+                    }
                     Command::Vibrate(reminder) => {
                         let Some(presenter) = presenter else {
                             notify(Event::VibrationFailed(reminder));
@@ -269,9 +409,9 @@ fn run(
                         let request =
                             Report::request(index, presenter, 1, SOFTWARE_ID, &VIBRATION)?;
                         // Button notifications read while waiting are still handled.
-                        if let Err(error) =
-                            crate::transact_observing(&device, &request, |r| buttons.handle(r))
-                        {
+                        if let Err(error) = crate::transact_observing(&device, &request, |r| {
+                            buttons.borrow_mut().handle(r)
+                        }) {
                             eprintln!("REMOTE vibration failed: {error}");
                             notify(Event::VibrationFailed(reminder));
                         }
@@ -281,7 +421,9 @@ fn run(
             if let Some(battery) = battery.filter(|_| std::time::Instant::now() >= battery_due) {
                 battery_due = std::time::Instant::now() + std::time::Duration::from_secs(300);
                 let request = Report::request(index, battery, 0, SOFTWARE_ID, &[])?;
-                match crate::transact_observing(&device, &request, |r| buttons.handle(r)) {
+                match crate::transact_observing(&device, &request, |r| {
+                    buttons.borrow_mut().handle(r)
+                }) {
                     Ok(reply) if reply.payload().len() >= 3 => {
                         let p = reply.payload();
                         notify(Event::Battery(p[0].min(100), p[2]));
@@ -296,7 +438,7 @@ fn run(
                 if !paused {
                     paused = true;
                     notify(Event::Hold(false));
-                    buttons.held.clear();
+                    buttons.borrow_mut().held.clear();
                     notify(Event::Message(
                         "安全输入已开启（例如密码框获得焦点），遥控器暂停；离开密码框后自动恢复。"
                             .into(),
@@ -323,13 +465,20 @@ fn run(
                 keys_down = down;
             }
             if let Ok(report) = Report::parse(&buffer[..count]) {
-                buttons.handle(&report);
+                buttons.borrow_mut().handle(&report);
             }
         }
         Ok(())
     })();
     // Hide promptly on read/disconnection failure, before cleanup transactions.
     notify(Event::Hold(false));
+    if !page_keys.is_empty() {
+        restore_leases(&mut page_keys, unrestored);
+    }
+    notify(Event::PageKeys(
+        PageKeysOutcome::Released,
+        page_key_record(unrestored, &[]),
+    ));
     let mut restore_errors = Vec::new();
     gestures.insert(0, top);
     while let Some(lease) = gestures.pop() {
@@ -349,5 +498,78 @@ fn run(
         (Err(error), true) => Err(format!("{error}；按键原值已恢复并校验。请重新连接。").into()),
         (Ok(()), false) => Err(format!("RESTORE FAILED: {restore}").into()),
         (Err(error), false) => Err(format!("{error}; RESTORE FAILED: {restore}").into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REPROG_CONTROLS_V4 event 0: the controls the device reports as held.
+    fn notification(held: &[u16]) -> Report {
+        let mut bytes = [0u8; 20];
+        bytes[..4].copy_from_slice(&[0x11, 1, 7, 0]);
+        for (slot, cid) in held.iter().enumerate() {
+            let [high, low] = cid.to_be_bytes();
+            bytes[4 + slot * 2] = high;
+            bytes[5 + slot * 2] = low;
+        }
+        Report::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn the_page_key_record_covers_only_page_keys_and_keeps_leftovers() {
+        let original = |mapped_to: u16| Reporting {
+            flags: 0,
+            mapped_to,
+        };
+        // A leftover entry the device would not give back, plus this session's
+        // leases. Entries for other controls must not travel in this record:
+        // the main thread replaces only the page-key entries with it.
+        let record = vec![
+            (BACK_SHORT, original(BACK_SHORT)),
+            (TOP_HOLD, original(TOP_HOLD)),
+            (NEXT_HOLD, original(NEXT_HOLD)),
+        ];
+        let held = vec![(NEXT_SHORT, original(NEXT_SHORT))];
+        assert_eq!(
+            page_key_record(&record, &held),
+            vec![
+                (BACK_SHORT, original(BACK_SHORT)),
+                (NEXT_SHORT, original(NEXT_SHORT)),
+            ]
+        );
+        // Released: the keys leave the record, the gesture entries stay out of
+        // this record and therefore keep their own entries in the file.
+        assert_eq!(
+            page_key_record(&record, &[]),
+            vec![(BACK_SHORT, original(BACK_SHORT))]
+        );
+    }
+
+    #[test]
+    fn a_held_short_page_key_reports_once_on_the_press_edge() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let notify = |event: Event| {
+            if let Event::Gesture(gesture) = event {
+                seen.borrow_mut().push(gesture);
+            }
+        };
+        let mut buttons = Buttons {
+            address: 1,
+            feature: 7,
+            held: Vec::new(),
+            notify: &notify,
+        };
+        // Press, keep holding (the device repeats the same snapshot), release.
+        buttons.handle(&notification(&[NEXT_SHORT]));
+        buttons.handle(&notification(&[NEXT_SHORT]));
+        buttons.handle(&notification(&[]));
+        buttons.handle(&notification(&[NEXT_SHORT]));
+        buttons.handle(&notification(&[BACK_SHORT, NEXT_SHORT]));
+        assert_eq!(
+            *seen.borrow(),
+            vec![Gesture::NextShort, Gesture::NextShort, Gesture::BackShort]
+        );
     }
 }

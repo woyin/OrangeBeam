@@ -1,6 +1,7 @@
 use orange_beam::controls::{
-    active_controls, top_button_state, Reporting, Result, TemporaryTopButton, BACK_HOLD, NEXT_HOLD,
-    SWITCH_HIGHLIGHT, TOP_HOLD,
+    active_controls, lease_controls, restore_leftovers, start_record, top_button_state, Reporting,
+    Result, TemporaryTopButton, BACK_HOLD, BACK_SHORT, NEXT_HOLD, NEXT_SHORT, SWITCH_HIGHLIGHT,
+    TOP_HOLD,
 };
 use orange_beam::controls::{format_unrestored, notification_address, parse_unrestored};
 use orange_beam::presentation::Presentation;
@@ -446,6 +447,220 @@ fn leftover_records_survive_a_restart_and_reject_garbage() {
     ];
     assert_eq!(parse_unrestored(&format_unrestored(&items)), items);
     assert!(parse_unrestored("zz 0 0\n00d8 0000\n00d8 0 0 extra\n").is_empty());
+}
+
+// Two short-press page keys on one simulated device: the countdown diverts
+// both or neither, and each lease restores its own control.
+struct PageKeys {
+    flags: [u16; 2],
+    divertible: [bool; 2],
+    writes: Vec<u16>,
+}
+
+const SHORT_KEYS: [u16; 2] = [NEXT_SHORT, BACK_SHORT];
+
+impl PageKeys {
+    fn new(flags: [u16; 2], divertible: [bool; 2]) -> std::rc::Rc<std::cell::RefCell<Self>> {
+        std::rc::Rc::new(std::cell::RefCell::new(Self {
+            flags,
+            divertible,
+            writes: Vec::new(),
+        }))
+    }
+    fn slot(cid: u16) -> usize {
+        usize::from(cid == BACK_SHORT)
+    }
+    fn exchange(&mut self, request: &Report) -> Result<Report> {
+        let payload = match request.function() {
+            0 => vec![2],
+            1 => {
+                let slot = usize::from(request.payload()[0]);
+                let [high, low] = SHORT_KEYS[slot].to_be_bytes();
+                // Capability byte 4 carries the divert bit; byte 8 is the high half.
+                let divert = if self.divertible[slot] { 0x34 } else { 0x14 };
+                vec![high, low, 0, 0xb6, divert, 0, 0, 0, 1]
+            }
+            2 => {
+                let cid = u16::from_be_bytes([request.payload()[0], request.payload()[1]]);
+                let flags = self.flags[Self::slot(cid)];
+                let [high, low] = cid.to_be_bytes();
+                vec![high, low, flags as u8, high, low, (flags >> 8) as u8]
+            }
+            3 => {
+                let p = request.payload();
+                let cid = u16::from_be_bytes([p[0], p[1]]);
+                let slot = Self::slot(cid);
+                self.writes.push(cid);
+                self.flags[slot] = (self.flags[slot] & !1) | u16::from(p[2] & 1);
+                p.to_vec()
+            }
+            _ => panic!("unexpected function"),
+        };
+        Ok(Report::request(
+            request.device(),
+            request.feature(),
+            request.function(),
+            request.software_id(),
+            &payload,
+        )?)
+    }
+}
+
+/// One cloneable transport per device, as the application builds it.
+fn shared(
+    device: &std::rc::Rc<std::cell::RefCell<PageKeys>>,
+) -> impl FnMut(&Report) -> Result<Report> + Clone {
+    let device = device.clone();
+    move |request: &Report| device.borrow_mut().exchange(request)
+}
+
+fn refusal(device: &std::rc::Rc<std::cell::RefCell<PageKeys>>) -> String {
+    match lease_controls(shared(device), 1, 7, &SHORT_KEYS, |_| None) {
+        Ok(_) => panic!("takeover must be refused"),
+        Err(error) => error.to_string(),
+    }
+}
+
+#[test]
+fn both_short_page_keys_take_over_and_restore_their_originals() {
+    let device = PageKeys::new([0, 0], [true, true]);
+    let leases = lease_controls(shared(&device), 1, 7, &SHORT_KEYS, |_| None).unwrap();
+    assert_eq!(device.borrow().writes, vec![NEXT_SHORT, BACK_SHORT]);
+    assert_eq!(device.borrow().flags, [1, 1]);
+    for lease in leases {
+        lease.finish().unwrap();
+    }
+    assert_eq!(device.borrow().flags, [0, 0], "both read back as default");
+    assert_eq!(
+        device.borrow().writes,
+        vec![NEXT_SHORT, BACK_SHORT, NEXT_SHORT, BACK_SHORT],
+        "each key wrote an enable and a restore"
+    );
+}
+
+#[test]
+fn one_refused_short_key_restores_the_one_already_diverted() {
+    // The back key is diverted by another client, so the pair must not split.
+    let device = PageKeys::new([0, 1], [true, true]);
+    let error = refusal(&device);
+    assert!(error.contains("00db"), "{error}");
+    assert_eq!(device.borrow().flags, [0, 1]);
+    assert_eq!(
+        device.borrow().writes,
+        vec![NEXT_SHORT, NEXT_SHORT],
+        "the first key was enabled, then restored, before the error returned"
+    );
+}
+
+#[test]
+fn short_keys_owned_elsewhere_or_unsupported_are_refused_without_writes() {
+    // Another client's diversion, and a control the device cannot divert.
+    for (flags, divertible) in [([1, 1], [true, true]), ([0, 0], [false, true])] {
+        let device = PageKeys::new(flags, divertible);
+        assert!(!refusal(&device).is_empty());
+        assert!(device.borrow().writes.is_empty(), "{flags:?}");
+        assert_eq!(device.borrow().flags, flags);
+    }
+}
+
+/// The record a session publishes must keep the originals of every control it
+/// diverts, and every earlier entry it did not resolve. A record that loses an
+/// entry makes the next start treat that control as another client's.
+#[test]
+fn the_start_record_keeps_earlier_entries_and_this_sessions_leases() {
+    let original = |flags: u16| Reporting {
+        flags,
+        mapped_to: TOP_HOLD,
+    };
+    let stale = vec![
+        (TOP_HOLD, original(0)),
+        (SWITCH_HIGHLIGHT, original(0x0200)),
+        (NEXT_SHORT, original(0)),
+    ];
+    let leased = vec![
+        (TOP_HOLD, original(0)),
+        (NEXT_HOLD, original(0)),
+        (BACK_SHORT, original(0)),
+    ];
+    let record = start_record(&stale, &leased);
+    // The leases come last and win; every unrelated leftover survives, so a
+    // crash record is never narrowed by starting a new session.
+    assert_eq!(
+        record,
+        vec![
+            (SWITCH_HIGHLIGHT, original(0x0200)),
+            (NEXT_SHORT, original(0)),
+            (TOP_HOLD, original(0)),
+            (NEXT_HOLD, original(0)),
+            (BACK_SHORT, original(0)),
+        ]
+    );
+    // The page-key takeover appends to this in-memory record. Without the
+    // gesture entries above, writing the record back would drop them.
+    let mut after_page_keys = record.clone();
+    after_page_keys.retain(|(cid, _)| !SHORT_KEYS.contains(cid));
+    after_page_keys.extend([(NEXT_SHORT, original(0)), (BACK_SHORT, original(0))]);
+    assert!(after_page_keys
+        .iter()
+        .any(|(cid, _)| *cid == SWITCH_HIGHLIGHT));
+    assert_eq!(
+        parse_unrestored(&format_unrestored(&after_page_keys)).len(),
+        5
+    );
+}
+
+#[test]
+fn a_leftover_short_key_record_is_restored_at_start_and_leaves_the_record() {
+    // A forced quit during setup left 00d9 diverted; the restart must restore
+    // it at once, without waiting for the next countdown.
+    let device = PageKeys::new([1, 0], [true, true]);
+    let leftover = vec![
+        (
+            NEXT_SHORT,
+            Reporting {
+                flags: 0,
+                mapped_to: NEXT_SHORT,
+            },
+        ),
+        (
+            TOP_HOLD,
+            Reporting {
+                flags: 0,
+                mapped_to: TOP_HOLD,
+            },
+        ),
+    ];
+    let restored = restore_leftovers(shared(&device), 1, 7, &SHORT_KEYS, |cid| {
+        leftover
+            .iter()
+            .find(|(control, _)| *control == cid)
+            .map(|(_, original)| *original)
+    });
+    assert_eq!(restored, vec![NEXT_SHORT]);
+    assert_eq!(device.borrow().flags, [0, 0], "page keys answer again");
+    assert_eq!(
+        device.borrow().writes,
+        vec![NEXT_SHORT],
+        "adoption writes nothing; only the restore does"
+    );
+    // The restored control leaves the record; unrelated entries stay.
+    let mut record = leftover.clone();
+    record.retain(|(cid, _)| !restored.contains(cid));
+    assert_eq!(record.len(), 1);
+    assert_eq!(record[0].0, TOP_HOLD);
+    // A record the device no longer matches is not touched.
+    let diverted_elsewhere = PageKeys::new([1, 0], [true, true]);
+    assert!(
+        restore_leftovers(shared(&diverted_elsewhere), 1, 7, &SHORT_KEYS, |cid| (cid
+            == NEXT_SHORT)
+            .then_some(Reporting {
+                flags: 0x0200,
+                mapped_to: NEXT_SHORT
+            }))
+        .is_empty()
+    );
+    assert!(diverted_elsewhere.borrow().writes.is_empty());
+    assert_eq!(diverted_elsewhere.borrow().flags, [1, 0]);
 }
 
 #[test]
