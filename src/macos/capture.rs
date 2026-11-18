@@ -12,6 +12,19 @@ use objc2_foundation::*;
 use objc2_screen_capture_kit::*;
 use std::cell::{Cell, RefCell};
 
+/// Extra logical points around the magnifier source circle so small pointer
+/// movements on a static screen reuse the same rasterized CGImage.
+const TILE_MARGIN_POINTS: f64 = 128.0;
+/// Extra logical points beyond `radius / zoom` to cover circle antialiasing.
+const NEED_MARGIN_POINTS: f64 = 2.0;
+
+/// The last rasterized tile, keyed by frame so a still screen rasterizes once.
+struct CachedTile {
+    sequence: u64,
+    point_rect: NSRect,
+    image: Retained<CGImage>,
+}
+
 #[derive(Default)]
 pub(super) struct CaptureData {
     epoch: Cell<u64>,
@@ -20,7 +33,9 @@ pub(super) struct CaptureData {
     height: Cell<usize>,
     stream: RefCell<Option<Retained<SCStream>>>,
     context: RefCell<Option<Retained<CIContext>>>,
-    image: RefCell<Option<Retained<CGImage>>>,
+    /// Latest captured frame, kept lazy: the output callback must not rasterize.
+    source: RefCell<Option<Retained<CIImage>>>,
+    tile: RefCell<Option<CachedTile>>,
     sequence: Cell<u64>,
     error: RefCell<Option<String>>,
 }
@@ -40,13 +55,12 @@ define_class!(
             // from a stopped/replaced stream, including late frames during switching.
             if kind != SCStreamOutputType::Screen || !self.is_current(stream) { return; }
             let Some(pixel) = buffer.image_buffer() else { return; };
+            // Only the lazy source is stored. Rasterizing a whole 4K/5K screen
+            // here stalled the main queue up to 30 times per second; the tile is
+            // now cropped on demand in `tile`.
             let image = CIImage::imageWithCVPixelBuffer(&pixel);
-            let mut context = self.ivars().context.borrow_mut();
-            let context = context.get_or_insert_with(|| CIContext::contextWithOptions(None));
-            if let Some(frame) = context.createCGImage_fromRect(&image, image.extent()) {
-                self.ivars().image.replace(Some(frame));
-                self.ivars().sequence.set(self.ivars().sequence.get().wrapping_add(1));
-            }
+            self.ivars().source.replace(Some(image));
+            self.ivars().sequence.set(self.ivars().sequence.get().wrapping_add(1));
         }
     }
     unsafe impl SCStreamDelegate for Capture {
@@ -116,7 +130,8 @@ define_class!(
             if let Some(error) = error.downcast_ref::<NSError>() {
                 self.ivars().error.replace(Some(error.localizedDescription().to_string()));
             }
-            self.ivars().image.replace(None);
+            self.ivars().source.replace(None);
+            self.ivars().tile.replace(None);
         }
     }
 );
@@ -179,22 +194,172 @@ impl Capture {
                 stream.stopCaptureWithCompletionHandler(None);
             }
         }
-        self.ivars().image.replace(None);
+        self.ivars().source.replace(None);
+        self.ivars().tile.replace(None);
         self.ivars().context.replace(None);
         self.ivars().error.replace(None);
     }
-    pub fn frame(&self) -> Option<(u64, Retained<CGImage>)> {
-        self.ivars()
-            .image
-            .borrow()
-            .as_ref()
-            .map(|image| (self.ivars().sequence.get(), image.clone()))
+    /// Rasterizes only the padded tile around `center` (view points), reusing
+    /// the cached one while the frame is unchanged and the magnifier circle
+    /// still fits inside it. Returns the frame sequence, the point rectangle the
+    /// image covers and the image itself.
+    pub fn tile(
+        &self,
+        center: NSPoint,
+        radius: f64,
+        zoom: f64,
+        scale: f64,
+        view_size: NSSize,
+    ) -> Option<(u64, NSRect, Retained<CGImage>)> {
+        // Cloned rather than borrowed: rasterizing must not make a callback in
+        // the same turn fail with a nested borrow.
+        let source = self.ivars().source.borrow().clone()?;
+        let sequence = self.ivars().sequence.get();
+        // A circle of `radius` drawn at `zoom` samples this much of the screen.
+        let need_half = radius / zoom + NEED_MARGIN_POINTS;
+        let nx0 = (center.x - need_half).clamp(0.0, view_size.width);
+        let ny0 = (center.y - need_half).clamp(0.0, view_size.height);
+        let nx1 = (center.x + need_half).clamp(0.0, view_size.width);
+        let ny1 = (center.y + need_half).clamp(0.0, view_size.height);
+        let needed = NSRect::new(NSPoint::new(nx0, ny0), NSSize::new(nx1 - nx0, ny1 - ny0));
+        if let Some(cached) = self.ivars().tile.borrow().as_ref() {
+            if cached.sequence == sequence && rect_contains(cached.point_rect, needed) {
+                return Some((sequence, cached.point_rect, cached.image.clone()));
+            }
+        }
+        // SAFETY: The extent is read-only metadata of a retained image, and the
+        // crop runs on the main thread with a context owned by this controller.
+        let (pixel_rect, point_rect) =
+            tile_bounds(unsafe { source.extent() }, center, radius, zoom, scale)?;
+        let mut context = self.ivars().context.borrow_mut();
+        let context = context.get_or_insert_with(|| unsafe { CIContext::contextWithOptions(None) });
+        let image = unsafe { context.createCGImage_fromRect(&source, pixel_rect) }?;
+        self.ivars().tile.replace(Some(CachedTile {
+            sequence,
+            point_rect,
+            image: image.clone(),
+        }));
+        Some((sequence, point_rect, image))
     }
     /// Whether a frame is available, without cloning the image to check it.
     pub fn has_frame(&self) -> bool {
-        self.ivars().image.borrow().is_some()
+        self.ivars().source.borrow().is_some()
     }
     pub fn error(&self) -> Option<String> {
         self.ivars().error.borrow().clone()
+    }
+}
+
+/// Computes integer-aligned `(pixel_rect, point_rect)` for a padded tile
+/// around `center` (in view points), clamped to `extent` (in pixels).
+pub(super) fn tile_bounds(
+    extent: NSRect,
+    center: NSPoint,
+    radius: f64,
+    zoom: f64,
+    scale: f64,
+) -> Option<(NSRect, NSRect)> {
+    let half = radius / zoom + TILE_MARGIN_POINTS;
+    let max_x = extent.origin.x + extent.size.width;
+    let max_y = extent.origin.y + extent.size.height;
+    let x0 = (extent.origin.x + (center.x - half) * scale)
+        .floor()
+        .clamp(extent.origin.x, max_x);
+    let y0 = (extent.origin.y + (center.y - half) * scale)
+        .floor()
+        .clamp(extent.origin.y, max_y);
+    let x1 = (extent.origin.x + (center.x + half) * scale)
+        .ceil()
+        .clamp(extent.origin.x, max_x);
+    let y1 = (extent.origin.y + (center.y + half) * scale)
+        .ceil()
+        .clamp(extent.origin.y, max_y);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let pixel_rect = NSRect::new(NSPoint::new(x0, y0), NSSize::new(x1 - x0, y1 - y0));
+    let point_rect = NSRect::new(
+        NSPoint::new(
+            (x0 - extent.origin.x) / scale,
+            (y0 - extent.origin.y) / scale,
+        ),
+        NSSize::new((x1 - x0) / scale, (y1 - y0) / scale),
+    );
+    Some((pixel_rect, point_rect))
+}
+
+/// Whether a cached tile still covers everything the magnifier circle samples.
+/// An empty need (the pointer is off screen) is always covered.
+fn rect_contains(outer: NSRect, inner: NSRect) -> bool {
+    const TOLERANCE: f64 = 1e-6;
+    inner.size.width <= 0.0
+        || inner.size.height <= 0.0
+        || (inner.origin.x >= outer.origin.x - TOLERANCE
+            && inner.origin.y >= outer.origin.y - TOLERANCE
+            && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width + TOLERANCE
+            && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height + TOLERANCE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+    }
+
+    #[test]
+    fn tile_bounds_are_pixel_aligned_and_cover_the_circle() {
+        // A 3840x2160 pixel display is 1920x1080 points at scale 2. radius 60
+        // at zoom 2 is 30 pt; with the 128 pt margin the half size is 158 pt,
+        // i.e. a 632 px tile, 812 px for a 150 pt radius.
+        let extent = rect(0.0, 0.0, 3840.0, 2160.0);
+        let (pixel, point) =
+            tile_bounds(extent, NSPoint::new(960.0, 540.0), 60.0, 2.0, 2.0).expect("tile");
+        assert_eq!(pixel, rect(1604.0, 764.0, 632.0, 632.0));
+        assert_eq!(point, rect(802.0, 382.0, 316.0, 316.0));
+        assert_eq!(pixel.size.width, point.size.width * 2.0);
+        // The cached tile always covers the sampled circle, which is what lets
+        // a static pointer move without a new rasterization.
+        assert!(rect_contains(
+            point,
+            rect(960.0 - 32.0, 540.0 - 32.0, 64.0, 64.0)
+        ));
+        // A fractional centre is expanded outwards to whole pixels, never in.
+        let (pixel, point) =
+            tile_bounds(extent, NSPoint::new(1920.3, 1080.7), 60.0, 2.0, 1.0).expect("tile");
+        assert_eq!(pixel, rect(1762.0, 922.0, 317.0, 317.0));
+        assert_eq!(point, pixel);
+    }
+
+    #[test]
+    fn tile_bounds_clamp_at_screen_edges_and_reject_off_screen() {
+        let extent = rect(0.0, 0.0, 800.0, 450.0);
+        // Top left corner: both edges clip, so no pixel outside the screen.
+        let (pixel, point) =
+            tile_bounds(extent, NSPoint::new(90.0, 70.0), 60.0, 2.0, 1.0).expect("tile");
+        assert_eq!(pixel, rect(0.0, 0.0, 248.0, 228.0));
+        assert_eq!(point, pixel);
+        // Bottom right corner clips to the remaining 168 pt.
+        let (pixel, _) =
+            tile_bounds(extent, NSPoint::new(790.0, 440.0), 60.0, 2.0, 1.0).expect("tile");
+        assert_eq!(pixel, rect(632.0, 282.0, 168.0, 168.0));
+        // A pointer outside the screen leaves an empty tile instead of a panic.
+        assert_eq!(
+            tile_bounds(extent, NSPoint::new(2000.0, 2000.0), 60.0, 2.0, 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn cached_tile_covers_small_pointer_moves_only() {
+        let tile = rect(242.0, 67.0, 316.0, 316.0);
+        // Staying inside the 128 pt margin reuses the cached image.
+        assert!(rect_contains(tile, rect(368.0, 193.0, 64.0, 64.0)));
+        assert!(rect_contains(tile, rect(468.0, 293.0, 64.0, 64.0)));
+        // Moving past the margin has to rasterize again.
+        assert!(!rect_contains(tile, rect(600.0, 400.0, 64.0, 64.0)));
+        // An empty need is covered by definition.
+        assert!(rect_contains(tile, rect(1000.0, 1000.0, 0.0, 0.0)));
     }
 }

@@ -15,6 +15,8 @@ pub(super) struct ViewData {
     pub(super) shade: Cell<f64>,
     pub(super) zoom: Cell<f64>,
     pub(super) image: RefCell<Option<Retained<NSImage>>>,
+    /// Logical point rectangle of the screen covered by `image` (None = full bounds).
+    pub(super) image_rect: Cell<Option<NSRect>>,
     pub(super) sequence: Cell<u64>,
     pub(super) black: Cell<bool>,
     /// Box effect content in view coordinates.
@@ -211,7 +213,16 @@ define_class!(
                             NSGraphicsContext::saveGraphicsState_class();
                             NSBezierPath::bezierPathWithOvalInRect(circle).addClip();
                             let zoom = data.zoom.get();
-                            let destination = NSRect::new(NSPoint::new(center.x * (1.0-zoom), center.y * (1.0-zoom)), NSSize::new(bounds.size.width * zoom, bounds.size.height * zoom));
+                            // The image may be a pointer-sized tile rather than the
+                            // whole screen, so its source rectangle sets the offset.
+                            let source_rect = data.image_rect.get().unwrap_or(bounds);
+                            let destination = NSRect::new(
+                                NSPoint::new(
+                                    center.x * (1.0 - zoom) + source_rect.origin.x * zoom,
+                                    center.y * (1.0 - zoom) + source_rect.origin.y * zoom,
+                                ),
+                                NSSize::new(source_rect.size.width * zoom, source_rect.size.height * zoom),
+                            );
                             image.drawInRect_fromRect_operation_fraction(destination, NSRect::ZERO, NSCompositingOperation::SourceOver, 1.0);
                             NSGraphicsContext::restoreGraphicsState_class();
                         }
@@ -339,7 +350,9 @@ impl Overlay {
         if self.shown.replace(false) {
             self.panel.setAlphaValue(0.0);
         }
-        self.view.ivars().image.replace(None);
+        let data = self.view.ivars();
+        data.image.replace(None);
+        data.image_rect.set(None);
     }
     /// Remove the panel for good (display configuration changed).
     pub(super) fn retire(&self) {
@@ -357,6 +370,7 @@ impl Overlay {
         let data = self.view.ivars();
         let before = data.look();
         data.image.replace(None);
+        data.image_rect.set(None);
         data.black.set(true);
         self.repaint(before, false);
     }
@@ -400,6 +414,7 @@ impl Overlay {
         let data = self.view.ivars();
         let before = data.look();
         data.image.replace(None);
+        data.image_rect.set(None);
         data.black.set(false);
         data.effect.set(Effect::Box);
         data.box_draw.set(draw);
@@ -418,21 +433,35 @@ impl Overlay {
         let before = data.look();
         let mut fresh_image = false;
         if state.effect == Effect::Magnify {
-            let Some((sequence, image)) = capture.frame() else {
+            let tile = capture.tile(
+                NSPoint::new(local.x, local.y),
+                state.radius,
+                state.zoom,
+                self.scale,
+                self.frame.size,
+            );
+            let Some((sequence, point_rect, image)) = tile else {
                 self.hide();
                 return;
             };
-            if sequence != data.sequence.get() || data.image.borrow().is_none() {
+            if sequence != data.sequence.get()
+                || data.image_rect.get() != Some(point_rect)
+                || data.image.borrow().is_none()
+            {
+                // Crossing a tile edge on the same frame only changes which
+                // pixels are magnified; the moved circle already forces repaint.
+                fresh_image = sequence != data.sequence.get() || data.image.borrow().is_none();
                 data.image.replace(Some(NSImage::initWithCGImage_size(
                     NSImage::alloc(),
                     &image,
-                    self.frame.size,
+                    point_rect.size,
                 )));
+                data.image_rect.set(Some(point_rect));
                 data.sequence.set(sequence);
-                fresh_image = true;
             }
         } else {
             data.image.replace(None);
+            data.image_rect.set(None);
         }
         self.set_level(NSFloatingWindowLevel);
         data.black.set(false);

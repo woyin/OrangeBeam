@@ -85,7 +85,11 @@ pub(super) struct CountdownWindow {
 
 impl CountdownWindow {
     pub(super) fn new(mtm: MainThreadMarker, screen: &NSScreen) -> Self {
-        let frame = screen.frame();
+        Self::new_for_frame(mtm, screen.frame())
+    }
+    /// Same panel for an explicit screen rectangle, so the layout rules can be
+    /// checked on a runner without displays.
+    pub(super) fn new_for_frame(mtm: MainThreadMarker, frame: NSRect) -> Self {
         // SAFETY: AppKit calls stay on main; the panel is retained here and
         // release-on-close is disabled before it can be shown.
         unsafe {
@@ -184,7 +188,7 @@ impl CountdownWindow {
         ));
         self.hint.setHidden(mode != CountdownMode::Setup);
     }
-    fn render(&self, look: Option<CountdownLook>) {
+    pub(super) fn render(&self, look: Option<CountdownLook>) {
         let Some(look) = look else {
             self.mode.set(None);
             if self.shown.replace(false) {
@@ -216,6 +220,19 @@ impl CountdownWindow {
     pub(super) fn retire(&self) {
         self.panel.orderOut(None);
         self.panel.close();
+    }
+    /// Read-only accessors for the offline checks in `render_qa`.
+    pub(super) fn qa_panel(&self) -> &OverlayPanel {
+        &self.panel
+    }
+    pub(super) fn qa_time_text(&self) -> String {
+        self.time.stringValue().to_string()
+    }
+    pub(super) fn qa_hint_text(&self) -> String {
+        self.hint.stringValue().to_string()
+    }
+    pub(super) fn qa_is_red(&self) -> bool {
+        self.red.get()
     }
 }
 
